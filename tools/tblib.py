@@ -71,10 +71,17 @@ def text_variants(text):
     vs = [text]
     if not any(is_cyr(lower_cp(ord(c))) for c in text) and any('a' <= c <= 'z' for c in low):
         vs.append(''.join(LAYOUT.get(c, c) for c in low))
-        t = low
-        for a, b in TRANSLIT_MULTI:
-            t = t.replace(a, b)
-        vs.append(''.join(TRANSLIT_ONE.get(c, c) for c in t))
+        out, i = '', 0
+        while i < len(low):
+            for a, b in TRANSLIT_MULTI:
+                if low.startswith(a, i):
+                    out += b
+                    i += len(a)
+                    break
+            else:
+                out += TRANSLIT_ONE.get(low[i], low[i])
+                i += 1
+        vs.append(out)
         vs.append(''.join('у' if c == 'y' else HOMO.get(c, c) for c in low))
     return vs
 
@@ -178,7 +185,7 @@ def key_match(toks, key):
     """-> (score 0..1, индекс захваченного токена)"""
     w, capnext, parts = key
     k = len(parts)
-    best, cap = 0.0, -1
+    best, cap, start = 0.0, -1, -1
     for i in range(0, len(toks) - k + 1):
         s = 1.0
         for j in range(k):
@@ -189,8 +196,9 @@ def key_match(toks, key):
             s = min(s, ps)
         if s > best:
             best = s
+            start = i
             cap = i + k if (capnext and i + k < len(toks)) else i + k - 1
-    return best, cap
+    return best, cap, start
 
 
 # ---------------------------------------------------------------- парсер phrases/*.txt

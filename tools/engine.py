@@ -14,15 +14,15 @@ def score_intents(data, toks):
     for it in data.intents:
         if it['short'] and n > 2:
             continue
-        s, bk, cap = 0.0, 0.0, -1
+        bk, cap, per = 0.0, -1, {}
         for key in it['keys']:
-            m, c = key_match(toks, key)
+            m, c, st = key_match(toks, key)
             if m > 0:
                 v = key[0] * m
-                s += v
+                per[st] = max(per.get(st, 0), v)
                 if v > bk:
                     bk, cap = v, c
-        s += it['prio']
+        s = sum(per.values()) + it['prio']
         if s > best[1]:
             best = (it, s, cap)
     return best
