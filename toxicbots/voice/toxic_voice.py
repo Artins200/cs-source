@@ -23,6 +23,9 @@ import urllib.request
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# модели и голоса качаем не в папку игры (Program Files может быть без прав на запись)
+DATA = os.path.join(os.environ.get('LOCALAPPDATA') or os.path.expanduser('~'), 'ToxicBots')
+NEED = 'vosk sounddevice pynput piper-tts numpy'
 MODELS = {
     'small': 'vosk-model-small-ru-0.22',
     'big': 'vosk-model-ru-0.42',
@@ -42,12 +45,12 @@ def find_cstrike(arg):
 
 
 def ensure_model(name):
-    mdir = os.path.join(HERE, 'model', name)
+    mdir = os.path.join(DATA, 'model', name)
     if os.path.isdir(mdir):
         return mdir
-    os.makedirs(os.path.join(HERE, 'model'), exist_ok=True)
+    os.makedirs(os.path.join(DATA, 'model'), exist_ok=True)
     url = 'https://alphacephei.com/vosk/models/%s.zip' % name
-    zpath = os.path.join(HERE, 'model', name + '.zip')
+    zpath = os.path.join(DATA, 'model', name + '.zip')
     print('Качаю модель распознавания речи (один раз):', url)
 
     def hook(n, bs, total):
@@ -57,7 +60,7 @@ def ensure_model(name):
     urllib.request.urlretrieve(url, zpath, hook)
     print('\nРаспаковываю...')
     with zipfile.ZipFile(zpath) as z:
-        z.extractall(os.path.join(HERE, 'model'))
+        z.extractall(os.path.join(DATA, 'model'))
     os.remove(zpath)
     return mdir
 
@@ -102,20 +105,24 @@ def main():
     ap.add_argument('--demo', action='store_true', help='прослушать все голоса')
     a = ap.parse_args()
 
-    import sounddevice as sd
+    try:
+        import sounddevice as sd  # noqa
+        import numpy  # noqa
+    except ImportError as e:
+        sys.exit('Не установлен пакет: %s\nЗапусти УСТАНОВИТЬ_ЗАВИСИМОСТИ.bat или выполни:\n  py -m pip install %s' % (e.name, NEED))
     if a.list:
         print(sd.query_devices())
         return
     if a.demo:
         import toxic_tts
-        toxic_tts.demo(HERE)
+        toxic_tts.demo(DATA)
         return
     cs = find_cstrike(a.game)
     speaker = None
     if not a.no_tts:
         try:
             import toxic_tts
-            speaker = toxic_tts.Speaker(HERE, cs, a.tts_volume, a.voices.split(',') if a.voices else None)
+            speaker = toxic_tts.Speaker(DATA, cs, a.tts_volume, a.voices.split(',') if a.voices else None)
             speaker.run()
             print('Озвучка ботов включена. Голоса:', ', '.join(p[0] for p in speaker.presets))
         except Exception as e:
@@ -180,6 +187,7 @@ def main():
 
 
 if __name__ == '__main__':
+    sys.path.insert(0, HERE)
     try:
         main()
     except KeyboardInterrupt:
