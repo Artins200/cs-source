@@ -72,6 +72,11 @@ def best_classic(data, toks, cache={}):
     return best, bs
 
 
+def first_word(s):
+    t = tokenize(s)
+    return tstr(t[0]) if t else ''
+
+
 def pick_pool(sec, side, r):
     side_l = sec.get(side, []) if side else []
     all_l = sec.get('all', [])
@@ -82,9 +87,9 @@ def pick_pool(sec, side, r):
 
 def decorate(core, a, data, gen, ctx, r):
     if r.random() < (0.5 if a['mat'] else 0.25) and data.slots.get('pre'):
-        first = core.split(' ')[0].strip(',.!?').lower()
         pre = gen.expand(r.choice(data.slots['pre']), ctx)
-        if first not in pre.lower() and not core.startswith(str(ctx.get('name', '\x00'))):
+        prefirst = {first_word(x) for x in data.slots['pre']}
+        if first_word(core) not in prefirst and not core.startswith(str(ctx.get('name', '\x00'))):
             core = pre + ', ' + low_first(core)
     if r.random() < 0.2 and data.slots.get('post'):
         post = gen.expand(r.choice(data.slots['post']), ctx)

@@ -415,14 +415,31 @@ TBC.PickPool <- function(sec, side) {
 	return allL.len() > 0 ? allL : sideL
 }
 
+// первое слово в нижнем регистре без знаков: "Блять," -> "блять"
+TBC.FirstWord <- function(s) {
+	local w = [], cps = TBC.Decode(s)
+	foreach (c in cps) {
+		local l = TBC.LowerCp(c)
+		if (TBC.IsTok(l)) w.push(l)
+		else if (w.len() > 0) break
+	}
+	return TBC.Encode(w)
+}
+TBC._pre <- null
+TBC.PreFirst <- function() {
+	if (TBC._pre == null) {
+		TBC._pre = {}
+		foreach (p in TB_DATA.slots.pre) TBC._pre[TBC.FirstWord(p)] <- 1
+	}
+	return TBC._pre
+}
+
 TBC.Decorate <- function(core, a, ctx) {
 	local slots = TB_DATA.slots
 	if (TBC.Rnd() < (a.mat ? TB_CFG.pre_chance_mat : TB_CFG.pre_chance) && ("pre" in slots)) {
 		local pre = TBC.Expand(TBC.Pick(slots.pre), ctx)
-		local sp = core.find(" ")
-		local first = (sp == null) ? core : core.slice(0, sp)
 		local nm = ("name" in ctx) ? ctx.name : "\x01"
-		if (pre.find(first) == null && core.find(nm) != 0) core = pre + ", " + TBC.LowFirst(core)
+		if (!(TBC.FirstWord(core) in TBC.PreFirst()) && core.find(nm) != 0) core = pre + ", " + TBC.LowFirst(core)
 	}
 	if (TBC.Rnd() < TB_CFG.post_chance && ("post" in slots)) {
 		local post = TBC.Expand(TBC.Pick(slots.post), ctx)
