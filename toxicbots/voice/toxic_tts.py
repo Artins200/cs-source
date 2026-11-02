@@ -38,9 +38,31 @@ def ensure_voice(base, name):
     return onnx
 
 
+def load_voice(path, threads):
+    """Голос Piper с ограничением потоков процессора (чтобы не отнимать CPU у игры)."""
+    import json
+    import onnxruntime
+    from piper import PiperVoice
+    try:
+        from piper.config import PiperConfig
+        so = onnxruntime.SessionOptions()
+        so.intra_op_num_threads = max(1, threads)
+        so.inter_op_num_threads = 1
+        so.execution_mode = onnxruntime.ExecutionMode.ORT_SEQUENTIAL
+        with open(path + '.json', encoding='utf-8') as f:
+            cfg = PiperConfig.from_dict(json.load(f))
+        sess = onnxruntime.InferenceSession(path, sess_options=so, providers=['CPUExecutionProvider'])
+        return PiperVoice(config=cfg, session=sess)
+    except Exception as e:  # другая версия piper — грузим как есть
+        print('  (голос без ограничения потоков: %s)' % e)
+        return PiperVoice.load(path)
+
+
 class Speaker:
-    def __init__(self, base, cstrike, volume=1.0, only=None):
+    def __init__(self, base, cstrike, volume=1.0, only=None, threads=2, max_chars=0):
         from piper import PiperVoice  # noqa
+        self.threads = threads
+        self.max_chars = max_chars
         self.base = base
         self.path = os.path.join(cstrike, 'scriptdata', 'toxicbots_tts.txt')
         self.volume = volume
@@ -52,8 +74,7 @@ class Speaker:
 
     def voice(self, model):
         if model not in self.voices:
-            from piper import PiperVoice
-            self.voices[model] = PiperVoice.load(ensure_voice(self.base, model))
+            self.voices[model] = load_voice(ensure_voice(self.base, model), self.threads)
         return self.voices[model]
 
     def preset_for(self, botidx):
@@ -64,6 +85,9 @@ class Speaker:
         import sounddevice as sd
         from piper import SynthesisConfig
         name, model, length, rate = self.preset_for(botidx)
+        if self.max_chars and len(text) > self.max_chars:   # лёгкий режим: длинное режем по фразе
+            cut = max(text.rfind('.', 0, self.max_chars), text.rfind('!', 0, self.max_chars), text.rfind('?', 0, self.max_chars))
+            text = text[:cut + 1] if cut > 20 else text[:self.max_chars]
         v = self.voice(model)
         cfg = SynthesisConfig(length_scale=length, volume=self.volume)
         audio = [c.audio_int16_array for c in v.synthesize(text, syn_config=cfg)]
@@ -103,11 +127,19 @@ class Speaker:
                 self.q.put((idx, parts[3]))
         self.inited = True
 
+    def preload(self):
+        for m in sorted({p[1] for p in self.presets}):
+            try:
+                self.voice(m)
+            except Exception as e:
+                print('  ! голос %s: %s' % (m, e))
+
     def run(self):
         def worker():
+            self.preload()                    # грузим голоса сразу, а не посреди раунда
             while True:
                 idx, text = self.q.get()
-                if self.q.qsize() > 4:        # не копим отставание
+                if self.q.qsize() > (1 if self.max_chars else 4):   # не копим отставание
                     continue
                 try:
                     print('  бот #%d [%s]: %s' % (idx, self.preset_for(idx)[0], text))

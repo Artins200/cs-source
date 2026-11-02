@@ -100,12 +100,23 @@ def decorate(core, a, data, gen, ctx, r):
     return tidy(core)
 
 
-def reply(data, text, side, ctx, r=random):
-    """side: 'enemy' | 'team'. Возвращает (ответ, отладка)."""
+def nice_pool(sec, side, r):
+    return pick_pool({'all': sec.get('nice', []), side: sec.get('nice_' + side, [])}, side, r)
+
+
+def reply(data, text, side, ctx, r=random, nice=False):
+    """side: 'enemy' | 'team'. nice=True — бот в нормальном настроении. Возвращает (ответ, отладка)."""
     gen = Gen(data, r)
     a = analyze(data, text)
     ctx = dict(ctx)
     ctx['word'] = a['word'] or 'ты'
+    if nice:
+        it = a['intent']
+        pool = nice_pool(it, side, r) if it is not None else []
+        why = 'nice ' + (it['name'] if it is not None else '-')
+        if not pool:
+            pool, why = data.events['nice_fallback']['all'], why + ' (nice_fallback)'
+        return tidy(gen.expand(r.choice(pool), ctx)), '%s %.1f' % (why, a['score'])
     rep, sim = best_classic(data, a['toks'])
     if rep and r.random() < (0.8 if sim > 0.97 else 0.55):
         return tidy(gen.expand(rep, ctx)), 'classic %.2f' % sim

@@ -42,13 +42,18 @@ class FakeEnt {
 }
 ::Convars <- { GetInt = function(n) { return n == "mp_maxrounds" ? 4 : 0 } }
 ::TEAMS <- [FakeEnt(50, 2, false, "t"), FakeEnt(51, 3, false, "ct")]
+::BOMB <- false
 ::Entities <- { FindByClassname = function(prev, cls) {
+	if (cls == "planted_c4") return (BOMB && prev == null) ? TEAMS[0] : null
 	if (prev == null) return TEAMS[0]
 	if (prev == TEAMS[0]) return TEAMS[1]
 	return null } }
 ::THINK <- null
 ::SpawnEntityFromTable <- function(c, t) { return FakeEnt(60, 0, false, "think") }
-::AddThinkToEnt <- function(e, f) { THINK = e.scope[f] }
+::NEXT <- 0.0
+::THINKS <- 0
+::AddThinkToEnt <- function(e, f) { THINK = e.scope[f]; NEXT = NOW + 0.1 }
+::SendGlobalGameEvent <- function(n, t) { print("   EVENT " + n + " userid=" + t.userid + " slot=" + t.slot + "\n"); return true }
 ::ClientPrint <- function(p, d, s) {
 	local o = ""
 	foreach (i, c in s) { if (c == 7) { o += "<"; } else if (c == 1) o += ">"; else if (c >= 32 || c < 0) o += c.tochar() }
@@ -57,7 +62,8 @@ class FakeEnt {
 ::EV <- {}
 ::__CollectGameEventCallbacks <- function(scope) { foreach (k, v in scope) EV[k.slice(12)] <- v }
 dofile(DIR + "/mapspawn.nut")
-::run <- function(sec) { local end = NOW + sec; while (NOW < end) { NOW += 0.1; if (THINK) THINK() } }
+// think вызывается так, как попросил скрипт (return = через сколько секунд)
+::run <- function(sec) { local end = NOW + sec; while (NOW < end) { NOW += 0.05; if (THINK && NOW >= NEXT - 0.001) { THINKS++; NEXT = NOW + THINK() } } }
 ::say <- function(t) { print("Игрок: " + t + "\n"); EV.player_say({ userid = 1, text = t }); run(8) }
 TB_CFG.debug = false
 EV.round_start({})
@@ -88,3 +94,30 @@ EV.round_start({})
 EV.round_end({ winner = 3, reason = 8, message = "#CTs_Win" })
 SCORE[2] = 1
 run(20)
+
+print("--- новое: приказы, настроение, счёт, поддавки\n")
+EV.round_start({})
+EV.player_spawn({ userid = 1 })
+run(3)
+TB_CFG.debug = true
+foreach (t in ["пацаны давайте за мной на б пожалуйста", "за мной на б, еблан", "прикройте меня плиз", "дефузьте бомбу"]) say(t)
+BOMB = true
+PL[1].team = 3; PL[2].team = 3; PL[4].team = 2   // игрок за CT
+say("ребят дефузьте бомбу")
+PL[1].team = 2; PL[2].team = 2; PL[4].team = 3
+BOMB = false
+foreach (t in ["чуваки давайте быть командой а то пиздец анрил", "у тебя 0 килов лол", "Kirk посмотри на свой счёт, 0-5", "я поддаюсь, ща без поддавок", "!tb mood"]) say(t)
+print("--- раунд: игрок раздал 3 кила после «поддаюсь»\n")
+foreach (v in [4, 5, 6]) EV.player_death({ userid = v, attacker = 1, weapon = "ak47", headshot = false })
+run(4)
+EV.round_end({ winner = 2, reason = 9, message = "#Terrorists_Win" })
+run(14)
+print("--- раунд: хороший раунд без поддавок\n")
+EV.round_start({})
+foreach (v in [4, 5]) EV.player_death({ userid = v, attacker = 1, weapon = "ak47", headshot = false })
+EV.round_end({ winner = 2, reason = 9, message = "#Terrorists_Win" })
+run(14)
+print("--- простой (тишина 60 с): вызовов think = ")
+THINKS = 0
+run(60)
+print(THINKS + "\n")

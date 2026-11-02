@@ -29,6 +29,9 @@ def ints(lst):
     return '[' + ','.join(str(x) for x in lst) + ']'
 
 
+SECS = ('all', 'team', 'enemy', 'nice', 'nice_team', 'nice_enemy')
+
+
 def main():
     d = load_dir(os.path.join(ROOT, 'phrases'))
     cnt = Counter(d)
@@ -45,6 +48,9 @@ def main():
         out.append('  { name = %s, short = %d, prio = %d, keys = [%s],' % (q(it['name']), it['short'], it['prio'], keys))
         for sec in ('all', 'team', 'enemy'):
             out.append('    %s = %s,' % (sec, arr(it[sec], '        ')))
+        for sec in ('nice', 'nice_team', 'nice_enemy'):
+            if it[sec]:
+                out.append('    %s = %s,' % (sec, arr(it[sec], '        ')))
         out.append('  },')
     out.append('],')
     out.append('events = {')
@@ -72,8 +78,8 @@ def main():
     lines = 0
     print('%-18s %8s %14s' % ('интент/событие', 'шаблонов', 'вариантов'))
     for it in d.intents:
-        n = sum(cnt.lst(it[s]) for s in ('all', 'team', 'enemy'))
-        t = sum(len(it[s]) for s in ('all', 'team', 'enemy'))
+        n = sum(cnt.lst(it[s]) for s in SECS)
+        t = sum(len(it[s]) for s in SECS)
         lines += t
         total_raw += n
         total += n * deco

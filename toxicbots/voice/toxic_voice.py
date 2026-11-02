@@ -12,6 +12,7 @@ ToxicBots — голос. Слушает микрофон, распознаёт 
   python toxic_voice.py --no-mic        только озвучка ботов, без микрофона
   python toxic_voice.py --no-tts        только микрофон, боты без голоса
   python toxic_voice.py --demo          прослушать все голоса ботов
+  python toxic_voice.py --lite          для слабого ПК / ноутбука на встройке
 """
 import argparse
 import json
@@ -90,6 +91,19 @@ class Outbox:
         print('  ! не смог записать', self.path)
 
 
+def low_priority():
+    """Пониженный приоритет процесса: игра всегда важнее озвучки и распознавания."""
+    try:
+        if os.name == 'nt':
+            import ctypes
+            k = ctypes.windll.kernel32
+            k.SetPriorityClass(k.GetCurrentProcess(), 0x00004000)  # BELOW_NORMAL_PRIORITY_CLASS
+        else:
+            os.nice(5)
+    except Exception:
+        pass
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--mode', choices=['ptt', 'always'], default='ptt')
@@ -103,7 +117,11 @@ def main():
     ap.add_argument('--tts-volume', type=float, default=1.0)
     ap.add_argument('--voices', help='только эти модели, напр. dmitri,ruslan')
     ap.add_argument('--demo', action='store_true', help='прослушать все голоса')
+    ap.add_argument('--lite', action='store_true',
+                    help='слабый ПК/ноутбук: 2 голоса вместо 4, 1 поток, короткие фразы')
+    ap.add_argument('--threads', type=int, default=None, help='потоков CPU для озвучки (по умолчанию 2, в --lite 1)')
     a = ap.parse_args()
+    low_priority()
 
     try:
         import sounddevice as sd  # noqa
@@ -122,7 +140,9 @@ def main():
     if not a.no_tts:
         try:
             import toxic_tts
-            speaker = toxic_tts.Speaker(DATA, cs, a.tts_volume, a.voices.split(',') if a.voices else None)
+            only = a.voices.split(',') if a.voices else (['dmitri', 'ruslan'] if a.lite else None)
+            threads = a.threads or (1 if a.lite else 2)
+            speaker = toxic_tts.Speaker(DATA, cs, a.tts_volume, only, threads=threads, max_chars=140 if a.lite else 0)
             speaker.run()
             print('Озвучка ботов включена. Голоса:', ', '.join(p[0] for p in speaker.presets))
         except Exception as e:

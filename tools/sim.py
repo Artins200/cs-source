@@ -5,6 +5,7 @@
   python tools/sim.py                  — интерактивно
   python tools/sim.py "ты еблан" ...   — разово
   python tools/sim.py --events         — примеры событий (слив раунда, худший игрок и т.д.)
+  python tools/sim.py --nice "..."     — ответ бота в нормальном (не токсичном) настроении
 """
 import os
 import random
@@ -20,7 +21,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def make_ctx(data, k=3, d=11):
     ctx = {'name': 'Игрок', 'bot': 'Bot Vasya', 'kd': '%d-%d' % (k, d), 'k': k, 'd': d,
            'map': 'de_dust2', 'weapon': 'AK-47', 'num': 4, 'target': 'Игрок', 'worst': 'Игрок',
-           'wk': 0, 'wd': 1, 'wdmg': 27, 'best': 'Bot Petya', 'score': '3:9', 'round': 12}
+           'wk': 0, 'wd': 1, 'wdmg': 27, 'best': 'Bot Petya', 'score': '3:9', 'round': 12,
+           'bk': 7, 'bd': 4, 'bkd': '7-4', 'rk': 3, 'ck': 1, 'cd': 9, 'cmd': 'иду за тобой на Б', 'site': 'Б'}
     g = Gen(data)
     ctx['perf'] = g.expand('{perf_bad}' if k <= d else '{perf_good}', ctx)
     return ctx
@@ -29,6 +31,8 @@ def make_ctx(data, k=3, d=11):
 def main():
     data = load_dir(os.path.join(ROOT, 'phrases'))
     args = sys.argv[1:]
+    nice = '--nice' in args
+    args = [a for a in args if a != '--nice']
     if args and args[0] == '--events':
         for ev in sorted(data.events):
             ctx = make_ctx(data)
@@ -40,7 +44,7 @@ def main():
         for a in args:
             ctx = make_ctx(data)
             side = random.choice(['enemy', 'team'])
-            rep, why = engine.reply(data, a, side, ctx)
+            rep, why = engine.reply(data, a, side, ctx, nice=nice)
             print('> %s\n  [%s | %s] %s' % (a, side, why, rep))
         return
     print('ToxicBots симулятор. Пиши фразу (пусто = выход).')

@@ -116,28 +116,29 @@ TBC.Variants <- function(text) {
 // ------------------------------------------------------------ нечёткое сравнение
 TBC.Eq <- function(a, b) { return a == b || a == 42 || b == 42 }
 
-TBC.Lev <- function(a, b, cap) {
-	local la = a.len(), lb = b.len()
+TBC.Lev <- function(a, b, cap, la = -1) {
+	if (la < 0) la = a.len()
+	local lb = b.len()
 	local df = la - lb
 	if (df < 0) df = -df
 	if (df > cap) return cap + 1
-	local prev = array(lb + 1, 0)
+	local prev = array(lb + 1, 0), cur = array(lb + 1, 0), tmp
 	for (local j = 0; j <= lb; j++) prev[j] = j
 	for (local i = 1; i <= la; i++) {
-		local cur = array(lb + 1, 0)
 		cur[0] = i
 		local best = i, ai = a[i - 1]
 		for (local j = 1; j <= lb; j++) {
 			local v = prev[j] + 1
 			local w = cur[j - 1] + 1
 			if (w < v) v = w
-			w = prev[j - 1] + (TBC.Eq(ai, b[j - 1]) ? 0 : 1)
+			local bj = b[j - 1]
+			w = prev[j - 1] + ((ai == bj || ai == 42 || bj == 42) ? 0 : 1)
 			if (w < v) v = w
 			cur[j] = v
 			if (v < best) best = v
 		}
 		if (best > cap) return cap + 1
-		prev = cur
+		tmp = prev; prev = cur; cur = tmp
 	}
 	return prev[lb]
 }
@@ -163,9 +164,9 @@ TBC.PartScore <- function(tok, mode, key) {
 	if (mode == 1) {
 		if (TBC.Starts(tok, key, 0)) return 1.0
 		if (n >= 4) {
-			foreach (L in [n, n - 1, n + 1]) {
-				if (L >= 1 && L <= lt && TBC.Lev(tok.slice(0, L), key, 1) <= 1) return 0.8
-			}
+			if (n <= lt && TBC.Lev(tok, key, 1, n) <= 1) return 0.8
+			if (n - 1 <= lt && TBC.Lev(tok, key, 1, n - 1) <= 1) return 0.8
+			if (n + 1 <= lt && TBC.Lev(tok, key, 1, n + 1) <= 1) return 0.8
 		}
 		return 0.0
 	}
@@ -178,9 +179,18 @@ TBC.PartScore <- function(tok, mode, key) {
 }
 
 // key = [weight, capnext, [[mode, [cp..]], ...]] -> [score, capIndex]
-TBC.KeyMatch <- function(toks, key) {
+TBC.KeyMatch <- function(toks, key, f = null) {
 	local parts = key[2], k = parts.len(), best = 0.0, cap = -1, start = -1
+	local m0 = parts[0][0], n0 = parts[0][1].len()
 	for (local i = 0; i <= toks.len() - k; i++) {
+		if (f != null) {   // быстрый отсев слова (см. TBC.KF)
+			local t = toks[i], lt = t.len()
+			if (lt == 0) continue
+			if (m0 == 0 && (lt > n0 + 1 || lt < n0 - 1)) continue
+			if (m0 == 1 && lt < n0 - 1) continue
+			local c0 = t[0], c1 = (lt > 1) ? t[1] : -1
+			if (c0 != f[0] && c0 != f[1] && c1 != f[0] && c1 != f[1]) continue
+		}
 		local s = 1.0
 		for (local j = 0; j < k; j++) {
 			local ps = TBC.PartScore(toks[i + j], parts[j][0], parts[j][1])
@@ -203,13 +213,37 @@ TBC.MAT <- ["хуй","хуе","хуи","хуя","пизд","еба","ебл","е
 foreach (i, m in TBC.MAT) TBC.MAT[i] = TBC.Decode(m)
 TBC.EXPL <- [TBC.Decode("объясн"), TBC.Decode("поясн")]
 
+// Быстрый отсев ключей (результат тот же, что без него): совпадение с <=1 ошибкой
+// невозможно, если ни одна из двух первых букв ключа не стоит в начале какого-то слова.
+// KF[i][k] = null (проверять всегда) или [буква0, буква1]
+TBC.KF <- []
+foreach (it in TB_DATA.intents) {
+	local row = []
+	foreach (key in it.keys) {
+		local p = key[2][0], m = p[0], kc = p[1], n = kc.len(), f = null
+		if ((m == 0 && n < 8) || m == 1) {
+			if (n >= 2 && kc[0] != 42 && kc[1] != 42) f = [kc[0], kc[1]]
+			else if (n == 1 && kc[0] != 42) f = [kc[0], kc[0]]
+		}
+		row.push(f)
+	}
+	TBC.KF.push(row)
+}
+
 TBC.ScoreIntents <- function(toks) {
 	local best = null, bestS = 0.0, bestCap = -1, n = toks.len()
-	foreach (it in TB_DATA.intents) {
+	local heads = {}, wild = false
+	foreach (t in toks) {
+		if (t.len() > 0) { heads[t[0]] <- 1; if (t[0] == 42) wild = true }
+		if (t.len() > 1) { heads[t[1]] <- 1; if (t[1] == 42) wild = true }
+	}
+	foreach (ii, it in TB_DATA.intents) {
 		if (it.short && n > 2) continue
-		local s = 0.0, bk = 0.0, cap = -1, per = {}
-		foreach (key in it.keys) {
-			local r = TBC.KeyMatch(toks, key)
+		local s = 0.0, bk = 0.0, cap = -1, per = {}, kf = TBC.KF[ii]
+		foreach (ki, key in it.keys) {
+			local f = kf[ki]
+			if (f != null && !wild && !(f[0] in heads) && !(f[1] in heads)) continue
+			local r = TBC.KeyMatch(toks, key, wild ? null : f)
 			if (r[0] > 0) {
 				local v = key[0] * r[0]
 				if (!(r[2] in per) || per[r[2]] < v) per[r[2]] <- v
@@ -451,9 +485,22 @@ TBC.Decorate <- function(core, a, ctx) {
 	return TBC.Tidy(core)
 }
 
-// a = TBC.Analyze(text), side = "enemy" | "team"  -> [строка, отладка]
-TBC.Reply <- function(a, side, ctx) {
+// дружелюбный пул интента: nice_<side> / nice
+TBC.NicePool <- function(sec, side) {
+	local key = "nice_" + side
+	local sideL = (key in sec) ? sec[key] : [], allL = ("nice" in sec) ? sec.nice : []
+	if (sideL.len() > 0 && (allL.len() == 0 || TBC.Rnd() < 0.5)) return sideL
+	return allL.len() > 0 ? allL : sideL
+}
+
+// a = TBC.Analyze(text), side = "enemy" | "team", nice = бот в нормальном настроении -> [строка, отладка]
+TBC.Reply <- function(a, side, ctx, nice = false) {
 	ctx.word <- (a.word != "") ? a.word : "ты"
+	if (nice) {
+		local pool = (a.intent != null) ? TBC.NicePool(a.intent, side) : []
+		if (pool.len() == 0) pool = TB_DATA.events.nice_fallback.all
+		return [TBC.Tidy(TBC.Expand(TBC.Pick(pool), ctx)), "nice " + (a.intent != null ? a.intent.name : "-")]
+	}
 	local cl = TBC.BestClassic(a.toks)
 	if (cl != null && TBC.Rnd() < (cl[1] > 0.97 ? TB_CFG.classic_exact_chance : TB_CFG.classic_chance))
 		return [TBC.Tidy(TBC.Expand(cl[0], ctx)), "classic"]
@@ -478,4 +525,64 @@ TBC.EventLine <- function(name, side, ctx) {
 	local out = TBC.Tidy(TBC.Expand(t, ctx))
 	// у фразы есть готовая озвучка -> маркер \x02имя\x02 в начале (снимает main.nut)
 	return (snd != "") ? ("\x02" + snd + "\x02" + out) : out
+}
+
+// ------------------------------------------------------------ настроение сообщения
+TBC.IDX <- {}
+foreach (i, it in TB_DATA.intents) TBC.IDX[it.name] <- i
+
+// очки конкретного интента (0 — не похоже)
+TBC.IntentScore <- function(name, toks) {
+	if (!(name in TBC.IDX)) return 0.0
+	local ii = TBC.IDX[name], it = TB_DATA.intents[ii], per = {}, s = 0.0
+	foreach (key in it.keys) {
+		local r = TBC.KeyMatch(toks, key)
+		if (r[0] > 0) { local v = key[0] * r[0]; if (!(r[2] in per) || per[r[2]] < v) per[r[2]] <- v }
+	}
+	foreach (v in per) s += v
+	return s
+}
+
+// хамство в сообщении -> слово, которым обозвали ("еблан"), или null.
+// Короткие ключи — только без опечаток, чтобы "бомбу" не стало "бомжом".
+TBC.RUDE <- ["insult", "noob", "go_away", "mother"]
+TBC.RudeWord <- function(a) {
+	foreach (n in TBC.RUDE) {
+		if (!(n in TBC.IDX)) continue
+		foreach (key in TB_DATA.intents[TBC.IDX[n]].keys) {
+			local r = TBC.KeyMatch(a.toks, key)
+			if (r[0] >= 0.95 || (r[0] > 0 && key[2][0][1].len() >= 5)) return a.raws[r[2]]
+		}
+	}
+	return null
+}
+
+// вежливые/дружеские слова (начало слова)
+TBC.POLITE <- []
+foreach (w in ["ребят", "парн", "пацан", "братв", "чувак", "мужик", "друз", "народ", "пожалуйст", "плиз", "плз",
+	"пж", "please", "pls", "спасиб", "спс", "давайте", "можешь", "можете", "прошу", "бро", "братан", "братиш", "команда"])
+	TBC.POLITE.push(TBC.Decode(w))
+TBC.IsPolite <- function(toks) {
+	foreach (t in toks) foreach (w in TBC.POLITE) if (TBC.Starts(t, w, 0)) return true
+	return false
+}
+
+// "на б", "го а", "раш би" -> "Б" / "А" / ""
+TBC.SITE_A <- {}
+TBC.SITE_B <- {}
+foreach (w in ["а", "a", "эй", "ей", "ay"]) TBC.SITE_A[TBC.Encode(TBC.Decode(w))] <- 1
+foreach (w in ["б", "b", "би", "бэ", "бе", "bi"]) TBC.SITE_B[TBC.Encode(TBC.Decode(w))] <- 1
+TBC.SITE_PRE <- {}
+foreach (w in ["на", "го", "раш", "в", "к", "все", "идем", "идём", "пошли", "погнали", "стак", "держим", "сайт", "плент", "плэнт"])
+	TBC.SITE_PRE[w] <- 1
+TBC.Site <- function(a) {
+	local r = a.raws
+	for (local i = 0; i < r.len(); i++) {
+		local w = TBC.Encode(TBC.Decode(r[i]).map(function(c) { return TBC.LowerCp(c) }))
+		local prev = (i > 0) ? TBC.Encode(TBC.Decode(r[i - 1]).map(function(c) { return TBC.LowerCp(c) })) : ""
+		local okPre = (prev in TBC.SITE_PRE) || r.len() <= 2
+		if (okPre && (w in TBC.SITE_A)) return "А"
+		if (okPre && (w in TBC.SITE_B)) return "Б"
+	}
+	return ""
 }

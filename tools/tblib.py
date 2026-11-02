@@ -235,8 +235,16 @@ def load_file(d, fn):
                         cur = d.slots.setdefault(head[1], [])
                     elif kind == 'intent':
                         cur = {'name': head[1], 'w': 10, 'keys': [], 'all': [], 'team': [], 'enemy': [],
+                               'nice': [], 'nice_team': [], 'nice_enemy': [],
                                'short': 0, 'prio': 0, 'rawkeys': []}
                         d.intents.append(cur)
+                    elif kind == 'nice':
+                        # @nice имя — дружелюбные ответы для уже объявленного интента
+                        cur = [x for x in d.intents if x['name'] == head[1]]
+                        if not cur:
+                            raise ValueError('@nice: нет интента ' + head[1])
+                        cur = cur[0]
+                        section = 'nice'
                     elif kind == 'event':
                         cur = d.events.setdefault(head[1], {'all': [], 'team': [], 'enemy': []})
                     elif kind == 'classic':
@@ -249,10 +257,12 @@ def load_file(d, fn):
                 elif kind == 'classic':
                     a, b = s.split('=>', 1)
                     cur.append([a.strip(), b.strip()])
-                elif kind in ('intent', 'event'):
+                elif kind in ('intent', 'event', 'nice'):
                     if s.startswith('>'):
                         section = s[1:].strip()
-                        assert section in ('all', 'team', 'enemy'), section
+                        if kind == 'nice':
+                            section = 'nice' if section == 'all' else 'nice_' + section
+                        assert section in ('all', 'team', 'enemy', 'nice', 'nice_team', 'nice_enemy'), section
                         continue
                     if kind == 'intent' and re.match(r'^(keys|weight|short|prio):', s):
                         k, v = s.split(':', 1)
