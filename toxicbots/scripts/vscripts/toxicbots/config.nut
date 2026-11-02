@@ -23,5 +23,9 @@
 	voice_enabled        = true,   // читать распознанный голос (voice/ГОЛОС.bat)
 	voice_file           = "toxicbots_voice.txt",  // cstrike/scriptdata/<файл>
 	voice_echo           = true,   // показывать тебе "[голос] что распознано"
+	clips_enabled        = true,   // готовые озвученные фразы (sound/toxicbots/*.wav) прямо в игре
+	clips_volume         = 1.0,
+	tts_enabled          = true,   // живая озвучка всех ответов (нужна запущенная voice/ЗАПУСТИТЬ_ГОЛОС.bat)
+	tts_file             = "toxicbots_tts.txt",    // cstrike/scriptdata/<файл>
 	debug                = false   // писать в консоль, какой интент сработал
 }

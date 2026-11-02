@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Логика выбора ответа (эталон для main.nut)."""
 import random
+import re
 from tblib import (tokenize, text_variants, key_match, tstr, lev, Gen, tidy, cap_first, low_first)
 
 MIN_SCORE = 6.0
@@ -123,4 +124,9 @@ def reply(data, text, side, ctx, r=random):
 def event_line(data, name, side, ctx, r=random):
     gen = Gen(data, r)
     ev = data.events[name]
-    return tidy(gen.expand(r.choice(pick_pool(ev, side, r)), ctx))
+    t = r.choice(pick_pool(ev, side, r))
+    snd = ''
+    m = re.match(r'^\(snd:(\w+)\)\s*', t)
+    if m:
+        snd, t = m.group(1), t[m.end():]
+    return tidy(gen.expand(t, ctx)) + ('  [звук: %s.wav]' % snd if snd else '')

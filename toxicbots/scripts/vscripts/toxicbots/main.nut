@@ -116,12 +116,41 @@ TB.Print <- function(bot, text, teamOnly) {
 	if (!TB.Alive(bot)) head += "*УБИТ* "
 	if (teamOnly) head += (team == 2) ? "(Террорист) " : "(Спецназ) "
 	head += "\x07" + color + TB.Clean(TB.Name(bot)) + "\x01 :  "
+	local seen = false, host = TB.Human()
 	foreach (part in TB.Split(TB.Clean(text))) {
 		foreach (h in TB.Humans()) {
 			if (teamOnly && h.GetTeam() != team && h.GetTeam() >= 2) continue
 			ClientPrint(h, 3, head + part)   // 3 = HUD_PRINTTALK
+			if (host != null && h.entindex() == host.entindex()) seen = true
 		}
 	}
+	return seen
+}
+
+// ------------------------------------------------------------ озвучка
+// готовые клипы: sound/toxicbots/<имя>.wav (записаны заранее)
+TB.CLIPS <- ["lose1", "lose2", "lose3", "lose4", "matchlose1", "win1", "win2", "win3", "matchwin1", "kill1"]
+TB.PrecacheClips <- function() {
+	foreach (c in TB.CLIPS) PrecacheSound("toxicbots/" + c + ".wav")
+}
+TB.PlayClip <- function(bot, name) {
+	if (!TB_CFG.clips_enabled) return
+	EmitSoundEx({ sound_name = "toxicbots/" + name + ".wav", entity = bot, channel = 0,
+		volume = TB_CFG.clips_volume, sound_level = 0, filter_type = 5 })   // 0 = слышно везде, 5 = всем
+}
+
+// живая озвучка остальных фраз: программа voice/ЗАПУСТИТЬ_ГОЛОС.bat читает этот файл и говорит голосом бота
+TB.ttsLines <- []
+TB.ttsSeq <- 0
+TB.ttsSession <- RandomInt(1, 999999999)
+TB.Tts <- function(bot, text) {
+	if (!TB_CFG.tts_enabled) return
+	TB.ttsSeq++
+	TB.ttsLines.push(TB.ttsSession + ":" + TB.ttsSeq + "\t" + bot.entindex() + "\t" + bot.GetTeam() + "\t" + text)
+	if (TB.ttsLines.len() > 15) TB.ttsLines.remove(0)
+	local s = ""
+	foreach (l in TB.ttsLines) s += l + "\n"
+	StringToFile(TB_CFG.tts_file, s)
 }
 
 TB.Later <- function(delay, fn) { TB.queue.push({ t = Time() + delay, f = fn }) }
@@ -129,6 +158,11 @@ TB.Later <- function(delay, fn) { TB.queue.push({ t = Time() + delay, f = fn }) 
 // бот "печатает" (задержка по длине) и отправляет
 TB.BotSay <- function(bot, text, teamOnly, extra = 0.0) {
 	if (bot == null || text == null || text == "") return
+	local snd = ""
+	if (text[0] == 2) {
+		local e = text.find("\x02", 1)
+		if (e != null) { snd = text.slice(1, e); text = text.slice(e + 1) }
+	}
 	local idx = bot.entindex(), now = Time()
 	local typing = 0.6 + (text.len() / 2.0) / TB_CFG.typing_speed
 	if (typing > 4.5) typing = 4.5
@@ -137,7 +171,11 @@ TB.BotSay <- function(bot, text, teamOnly, extra = 0.0) {
 	TB.botNext[idx] <- t + 0.5
 	TB.queue.push({ t = t, f = function() {
 		local b = PlayerInstanceFromIndex(idx)
-		if (b != null && b.IsValid() && TB.IsBot(b)) TB.Print(b, text, teamOnly)
+		if (b != null && b.IsValid() && TB.IsBot(b)) {
+			local seen = TB.Print(b, text, teamOnly)
+			if (seen && snd != "") TB.PlayClip(b, snd)
+			else if (seen) TB.Tts(b, text)
+		}
 	} })
 	if (TB_CFG.debug) printl("[ToxicBots] " + TB.Name(bot) + (teamOnly ? " (team)" : "") + ": " + text)
 }
@@ -458,5 +496,6 @@ TB_Events.OnGameEvent_cs_win_panel_match <- function(params) {
 
 TB_Events.OnGameEvent_player_spawn <- function(params) { TB.EnsureThink() }
 
+try { TB.PrecacheClips() } catch (e) { printl("[ToxicBots] клипы: " + e) }
 __CollectGameEventCallbacks(TB_Events)
 printl("[ToxicBots] загружен: " + TB_DATA.intents.len() + " интентов, " + TB_DATA.classics.len() + " готовых ответов. Пиши в чат, боты ответят. !tb — команды.")

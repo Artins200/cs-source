@@ -9,6 +9,9 @@ ToxicBots — голос. Слушает микрофон, распознаёт 
   python toxic_voice.py --mode always   слушает всегда
   python toxic_voice.py --key v         другая клавиша
   python toxic_voice.py --big           большая модель (точнее, ~1.8 ГБ)
+  python toxic_voice.py --no-mic        только озвучка ботов, без микрофона
+  python toxic_voice.py --no-tts        только микрофон, боты без голоса
+  python toxic_voice.py --demo          прослушать все голоса ботов
 """
 import argparse
 import json
@@ -92,15 +95,37 @@ def main():
     ap.add_argument('--game', help='путь к папке cstrike')
     ap.add_argument('--device', type=int, default=None, help='номер микрофона (см. --list)')
     ap.add_argument('--list', action='store_true', help='список микрофонов')
+    ap.add_argument('--no-mic', action='store_true', help='не слушать микрофон')
+    ap.add_argument('--no-tts', action='store_true', help='не озвучивать ботов')
+    ap.add_argument('--tts-volume', type=float, default=1.0)
+    ap.add_argument('--voices', help='только эти модели, напр. dmitri,ruslan')
+    ap.add_argument('--demo', action='store_true', help='прослушать все голоса')
     a = ap.parse_args()
 
     import sounddevice as sd
-    from vosk import Model, KaldiRecognizer, SetLogLevel
     if a.list:
         print(sd.query_devices())
         return
-    SetLogLevel(-1)
+    if a.demo:
+        import toxic_tts
+        toxic_tts.demo(HERE)
+        return
     cs = find_cstrike(a.game)
+    speaker = None
+    if not a.no_tts:
+        try:
+            import toxic_tts
+            speaker = toxic_tts.Speaker(HERE, cs, a.tts_volume, a.voices.split(',') if a.voices else None)
+            speaker.run()
+            print('Озвучка ботов включена. Голоса:', ', '.join(p[0] for p in speaker.presets))
+        except Exception as e:
+            print('Озвучка недоступна:', e)
+    if a.no_mic:
+        print('Микрофон выключен (--no-mic). Ctrl+C — выход.')
+        while True:
+            time.sleep(1)
+    from vosk import Model, KaldiRecognizer, SetLogLevel
+    SetLogLevel(-1)
     out = Outbox(os.path.join(cs, 'scriptdata', 'toxicbots_voice.txt'))
     model = Model(ensure_model(MODELS['big' if a.big else 'small']))
     rate = 16000
@@ -129,7 +154,7 @@ def main():
             held['on'] = True
 
     def cb(data, frames, t, status):
-        if held['on']:
+        if held['on'] and not (speaker and speaker.busy.is_set()):
             audio.put(bytes(data))
 
     def emit(res):

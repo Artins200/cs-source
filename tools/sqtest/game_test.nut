@@ -10,6 +10,9 @@ local DIR = vargv[0]
 ::GetMapName <- function() { return "de_dust2" }
 ::VOICE <- null
 ::FileToString <- function(f) { return VOICE }
+::StringToFile <- function(f, s) { print("   TTS-FILE<" + f + "> last: " + s.slice(s.slice(0, s.len()-1).len() > 0 ? 0 : 0).len() + " bytes\n") }
+::PrecacheSound <- function(s) { return true }
+::EmitSoundEx <- function(t) { print("   SOUND " + t.sound_name + " from " + t.entity.name + "\n") }
 class FakeEnt {
 	idx = 0; team = 0; bot = false; name = ""; alive = 1; scope = null; valid = true
 	constructor(i, t, b, n) { idx = i; team = t; bot = b; name = n }

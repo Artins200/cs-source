@@ -3,3 +3,4 @@ toxicbots/voice/.venv/
 toxicbots/voice/model/
 *.pyc
 dist/
+toxicbots/voice/tts/

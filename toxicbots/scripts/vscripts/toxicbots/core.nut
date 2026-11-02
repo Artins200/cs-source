@@ -470,5 +470,12 @@ TBC.EventLine <- function(name, side, ctx) {
 	if (!(name in TB_DATA.events)) return null
 	local pool = TBC.PickPool(TB_DATA.events[name], side)
 	if (pool.len() == 0) return null
-	return TBC.Tidy(TBC.Expand(TBC.Pick(pool), ctx))
+	local t = TBC.Pick(pool), snd = ""
+	if (t.len() > 5 && t.slice(0, 5) == "(snd:") {
+		local e = t.find(")")
+		if (e != null) { snd = t.slice(5, e); t = t.slice(e + 1) }
+	}
+	local out = TBC.Tidy(TBC.Expand(t, ctx))
+	// у фразы есть готовая озвучка -> маркер \x02имя\x02 в начале (снимает main.nut)
+	return (snd != "") ? ("\x02" + snd + "\x02" + out) : out
 }
