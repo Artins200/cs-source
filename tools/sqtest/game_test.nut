@@ -29,8 +29,29 @@ class FakeWpn {
 	function GetClassname() { return cls }
 	function Kill() { valid = false; print("   KILL " + cls + " у " + owner.name + "\n"); owner.wpn.remove(owner.wpn.find(this)) }
 }
+class QAngle {
+	x = 0.0; y = 0.0; z = 0.0
+	constructor(a = 0.0, b = 0.0, c = 0.0) { x = a; y = b; z = c }
+}
+::TraceLine <- function(a, b, ig) { return 1.0 }
+::VELS <- 0
+::SNAPS <- 0
 class FakeEnt {
 	idx = 0; team = 0; bot = false; name = ""; alive = 1; scope = null; valid = true; pos = null; wpn = null; money = 800
+	hp = 100; vel = null; lag = 1.0
+	function GetHealth() { return hp }
+	function SetHealth(v) { hp = v }
+	function TakeDamage(d, t, a) {
+		hp -= d
+		if (hp <= 0 && alive) { alive = 0; print("   DAMAGE-KILL " + name + " от " + a.name + "\n"); ::EV.player_death({ userid = idx, attacker = a.idx, weapon = "world", headshot = false }) }
+	}
+	function EyePosition() { return pos + Vector(0, 0, 64) }
+	function EyeAngles() { return QAngle(0, 0, 0) }
+	function GetAngles() { return QAngle(0, 0, 0) }
+	function GetAbsVelocity() { return (vel != null) ? vel : Vector(0, 0, 0) }
+	function SetAbsVelocity(v) { vel = v; ::VELS++ }
+	function SnapEyeAngles(a) { ::SNAPS++ }
+	function GetActiveWeapon() { return null }
 	constructor(i, t, b, n) { idx = i; team = t; bot = b; name = n; pos = Vector(i * 100, 0, 0); wpn = [] }
 	function GetOrigin() { return pos }
 	function Give(c) { wpn.push(FakeWpn(c, this)) }
@@ -52,10 +73,14 @@ class FakeEnt {
 ::NetProps <- {
 	GetPropString = function(e, n) { return e.name }
 	GetPropEntityArray = function(e, n, i) { return (i < e.wpn.len()) ? e.wpn[i] : null }
-	SetPropInt = function(e, n, v) { if (n == "m_iAccount") { print("   MONEY " + e.name + " " + e.money + " -> " + v + "\n"); e.money = v } }
+	SetPropFloat = function(e, n, v) { if (n == "m_flLaggedMovementValue") e.lag = v }
+	SetPropInt = function(e, n, v) { if (n == "m_iTeamNum") { print("   TEAM " + e.name + " " + e.team + " -> " + v + "\n"); e.team = v; return } if (n == "m_iAccount") { print("   MONEY " + e.name + " " + e.money + " -> " + v + "\n"); e.money = v } }
 	GetPropInt = function(e, n) {
 		if (n == "m_iAccount") return e.money
 		if (n == "m_lifeState") return e.alive ? 0 : 2
+		if (n == "m_fFlags") return 1
+		if (n == "m_nButtons") return 1
+		if (n == "m_iHealth") return e.hp
 		if (n == "m_iTeamNum") return e.team
 		if (n == "m_iScore") return SCORE[e.team]
 		return 0
@@ -91,6 +116,7 @@ class FakeEnt {
 ::AddThinkToEnt <- function(e, f) { THINK = e.scope[f]; NEXT = NOW + 0.1 }
 ::SendGlobalGameEvent <- function(n, t) { print("   EVENT " + n + " userid=" + t.userid + " slot=" + t.slot + "\n"); return true }
 ::ClientPrint <- function(p, d, s) {
+	if (d == 4) { print("   CENTER[" + p.name + "] " + s + "\n"); return }
 	local o = ""
 	foreach (i, c in s) { if (c == 7) { o += "<"; } else if (c == 1) o += ">"; else if (c >= 32 || c < 0) o += c.tochar() }
 	print("   CHAT[" + p.name + "] " + o + "\n")
@@ -422,3 +448,51 @@ TB.SayChat(PL[2], "ЭТО ДОЛЖНО ОТМЕНИТЬСЯ", false, 9.0)
 say("ну чё пацаны")
 run(12)
 print("--- конец новое 4\n")
+
+print("\n=============== новое 5: чит-панель\n")
+::TEAMSTR <- function() { local o = ""; for (local i = 2; i <= 6; i++) o += PL[i].name + "=" + PL[i].team + " "; return o }
+::REVIVE <- function() { for (local i = 1; i <= 6; i++) { PL[i].alive = 1; PL[i].hp = 100 } }
+TB.DuelStop(); TB.offer = null; TB.dirty = 0; REVIVE(); run(30)
+say("!c")
+say("!c 4")
+print("--- боты стреляют в бессмертного\n")
+for (local i = 0; i < 4; i++) { EV.player_hurt({ userid = 1, attacker = 4, dmg_health = 90 }); PL[1].hp -= 90; run(1.5) }
+run(4)
+print("   hp=" + PL[1].hp + " sus=" + TB.sus + " stage=" + TB.susStage + "\n")
+print("--- аимбот: одно попадание = смерть\n")
+say("!c 1")
+EV.player_hurt({ userid = 5, attacker = 1, dmg_health = 20 }); run(5)
+EV.player_hurt({ userid = 6, attacker = 1, dmg_health = 20 }); run(5)
+print("   snaps=" + SNAPS + " sus=" + TB.sus + " stage=" + TB.susStage + "\n")
+print("--- ВХ-радар и спидхак\n")
+say("!c 2")
+say("!c 3")
+print("   lag=" + PL[1].lag + "\n")
+run(10)
+say("я не читер это скилл")
+run(15)
+print("   sus=" + TB.sus.tointeger() + " stage=" + TB.susStage + " mode=" + TB.cheatMode + "\n   " + TEAMSTR() + "\n")
+run(25)
+print("   sus=" + TB.sus.tointeger() + " stage=" + TB.susStage + " mode=" + TB.cheatMode + " ignore=" + TB.cheatIgnore + "\n   " + TEAMSTR() + "\n")
+// VELS считается за всё время
+run(10)
+print("   хоровод: vel-вызовов=" + VELS + " mode=" + TB.cheatMode + " ignore=" + TB.cheatIgnore + "\n   " + TEAMSTR() + "\n")
+run(15)
+print("   после хоровода: mode=" + TB.cheatMode + " ignore=" + TB.cheatIgnore + "\n   " + TEAMSTR() + "\n")
+print("--- УБИТЬ ВСЕХ НА КАРТЕ\n")
+REVIVE()
+say("!c 6")
+run(15)
+print("   killall=" + TB.cheatKillAll + " alive=" + PL[2].alive + PL[3].alive + PL[4].alive + PL[5].alive + PL[6].alive + "\n")
+EV.round_end({ winner = 2, reason = 9, message = "#Terrorists_Win" }); run(8)
+REVIVE(); EV.round_start({}); run(12)
+print("   новый раунд: mode=" + TB.cheatMode + "\n")
+print("--- второй раз: кто-то ливает\n")
+say("!c 6")
+run(15)
+print("--- всё выключил, ждём\n")
+say("!c 0")
+REVIVE()
+run(150)
+print("   прыжков-вызовов за всё время=" + VELS + " поворотов=" + SNAPS + "\n   sus=" + TB.sus.tointeger() + " stage=" + TB.susStage + " mode=" + TB.cheatMode + " ignore=" + TB.cheatIgnore + " lag=" + PL[1].lag + " hp=" + PL[1].hp + "\n   " + TEAMSTR() + "\n")
+print("--- конец новое 5\n")

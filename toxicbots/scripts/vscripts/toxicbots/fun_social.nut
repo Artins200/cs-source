@@ -361,6 +361,7 @@ TB.FunMapStart <- function(h) {
 }
 
 TB.FunAfterRound <- function(winner) {
+	if (TB.CheatQuiet()) return
 	local human = TB.Human()
 	if (human == null || human.GetTeam() < 2) return
 	local ht = human.GetTeam(), hs = TB.St(human.entindex())
@@ -442,7 +443,11 @@ TB.FunTick <- function(now) {
 	if (TB.dropPending != null) TB.DropTick(now)
 	if (TB.DuelOn()) { try { TB.DuelEnforce() } catch (e) { printl("[ToxicBots] дуэль: " + e) } }
 	else if (TB.duel != null && TB.duel.arm > 0.0) TB.DuelArmTick(now)
-	return (TB.DuelOn() || TB.dropPending != null || (TB.duel != null && TB.duel.arm > 0.0)) ? 0.3 : null
+	local r = (TB.DuelOn() || TB.dropPending != null || (TB.duel != null && TB.duel.arm > 0.0)) ? 0.3 : null
+	local ct = null
+	try { ct = TB.CheatTick(now) } catch (e) { printl("[ToxicBots] чит-панель: " + e) }
+	if (ct != null && (r == null || ct < r)) r = ct
+	return r
 }
 
 // ------------------------------------------------------------ ты сменил команду
@@ -450,7 +455,8 @@ TB_Events.OnGameEvent_player_team <- function(params) {
 	if (!TB_CFG.enabled || !("userid" in params)) return
 	if (("disconnect" in params) && params.disconnect) return
 	local p = TB.NoteUid(params.userid)
-	if (p == null || TB.IsBot(p)) return
+	if (p != null && TB.IsBot(p)) { TB.CheatNewBot(p); return }
+	if (p == null) return
 	local old = ("oldteam" in params) ? params.oldteam : 0, nw = ("team" in params) ? params.team : 0
 	if (old < 2 || nw < 2 || old == nw) return
 	TB.Respect(-4)

@@ -544,7 +544,7 @@ TB.OnDuel <- function(human, a, rude, polite) {
 
 // бот сам предлагает дуэль в начале раунда
 TB.MaybeOffer <- function() {
-	if (TB.duel != null || TB.offer != null || TB.roundNo < 2 || TB.roundNo < TB.offerNextRound || TBC.Rnd() > TB_CFG.duel_offer_chance) return
+	if (TB.duel != null || TB.offer != null || TB.susStage >= 2 || TB.roundNo < 2 || TB.roundNo < TB.offerNextRound || TBC.Rnd() > TB_CFG.duel_offer_chance) return
 	local h = TB.Human()
 	if (h == null || h.GetTeam() < 2) return
 	local foes = TB.Bots(h.GetTeam() == 2 ? 3 : 2)
