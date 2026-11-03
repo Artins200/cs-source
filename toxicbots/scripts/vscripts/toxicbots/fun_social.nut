@@ -14,6 +14,7 @@ TB.worstRow <- {}        // entindex -> сколько раундов подря
 TB.kickVote <- null      // { idx, name, until } — боты предложили кик бота
 TB.kickNextRound <- 0
 TB.botKillNext <- 0.0
+TB.kickHumanT <- -100.0  // когда боты предлагали кикнуть тебя
 
 // где ты «звал» ботов — для «ты сам сказал идти за тобой»
 TB.CMD_WHERE <- { cmd_follow = "идти за тобой", cmd_cover = "прикрывать тебя", cmd_hold = "держать позицию",
@@ -60,12 +61,14 @@ TB.Banter <- function(human, bot, delay) {
 	if (x == null) return
 	TB.banterNext = Time() + 25.0
 	// цепочка: если начало не влезло в чат (очередь) — продолжение не говорим
-	if (!TB.BotSay(x, TBC.EventLine("bot_jab", null, TB.CtxTo(human, x, bot)), false, delay + 1.5)) return
-	if (!TB.BotSay(bot, TBC.EventLine("bot_snap", null, TB.CtxTo(human, bot, x)), false, delay + 3.5)) return
-	if (TBC.Rnd() < 0.55) TB.BotSay(x, TBC.EventLine("bot_snap2", null, TB.CtxTo(human, x, bot)), false, delay + 5.5)
+	// каждая следующая реплика — не позже чем через 8 с после предыдущей, иначе это уже не ответ
+	if (!TB.SayChat(x, TBC.EventLine("bot_jab", null, TB.CtxTo(human, x, bot)), false, delay + 1.5, Time() + delay + 12.0)) return
+	if (!TB.SayChat(bot, TBC.EventLine("bot_snap", null, TB.CtxTo(human, bot, x)), false, delay + 3.5, TB.lastSayT + 8.0)) return
+	local t2 = TB.lastSayT
+	if (TBC.Rnd() < 0.55) TB.SayChat(x, TBC.EventLine("bot_snap2", null, TB.CtxTo(human, x, bot)), false, delay + 5.5, t2 + 8.0)
 	local tr = TB.Troll()
 	if (tr != null && !TB.IsTroll(x) && !TB.IsTroll(bot) && TBC.Rnd() < 0.5)
-		TB.BotSay(tr, TBC.EventLine("troll_banter", null, TB.CtxTo(human, tr, TBC.Rnd() < 0.5 ? x : bot)), false, delay + 6.5)
+		TB.SayChat(tr, TBC.EventLine("troll_banter", null, TB.CtxTo(human, tr, TBC.Rnd() < 0.5 ? x : bot)), false, delay + 6.5, t2 + 10.0)
 }
 
 // ------------------------------------------------------------ перехват сообщения игрока (до обычного ответа)
@@ -76,7 +79,7 @@ TB.FunSay <- function(human, a, text, rude, polite, name) {
 	local now = Time(), words = TB.Words(a)
 	if (rude) { local m = TB.FindMentioned(a.toks, TB.Bots()); if (m != null) TB.NoteRude(human, m, a) }
 	// 0) разговор про дуэль: перенос, отмена, правила, «не купил», «случайно»
-	if (TB.DuelTalk(human, a, words, name, rude, polite)) return true
+	if (TB.DuelTalk(human, a, words, name, rude, polite, text)) return true
 	// 1) ответ «да/нет» на предложение дуэли или кика («го кикнем» — это не «да» на дуэль)
 	local yn = (name in TB.CMDS || name == "kick" || name == "drop" || name == "duel") ? 0 : TB.YesNo(a, text)
 	if (TB.offer != null) {
@@ -103,13 +106,19 @@ TB.FunSay <- function(human, a, text, rude, polite, name) {
 	// 2) извинение перед ботом, которого ты обосрал
 	if ((name == "sorry" || TB.IsExcuse(words)) && TB.OnSorry(human, a, polite)) return true
 	// 3) спецтемы
+	if (name == "where_are") {
+		local b = TB.FindMentioned(a.toks, TB.Bots())
+		if (b != null && !TB.Alive(b)) { TB.DSay(b, "where_dead", TB.Ctx(human, b)); return true }
+	}
 	if (name == "cmd_defend") { TB.OnCommand(human, a, "cmd_defend", rude, polite); return true }
 	if (name == "drop" || (name != "duel" && TB.WantsDrop(a))) { TB.OnDrop(human, a, rude, polite); return true }
-	if (name == "duel") { TB.OnDuel(human, a, rude, polite); return true }
+	if (name == "duel") { TB.OnDuel(human, a, rude, polite); return true }   // (обычно уже обработано в DuelTalk)
 	if (name == "kick") { TB.OnKick(human, a, rude, polite); return true }
 	// 3) «ты сам позвал, а теперь мы нубы?»
 	local lc = TB.lastCmd
-	if (lc != null && now - lc.t < 60.0 && (rude || (name in TB.INSULTISH)) && TBC.Rnd() < 0.75) {
+	local named = TB.FindMentioned(a.toks, TB.Bots())
+	local toFoe = named != null && named.GetTeam() != human.GetTeam()   // «colin у тебя позор» — это не про тиммейтов
+	if (lc != null && !toFoe && now - lc.t < 60.0 && (rude || (name in TB.INSULTISH)) && TBC.Rnd() < 0.75) {
 		TB.lastCmd = null
 		local mates = TB.Bots(human.GetTeam())
 		if (mates.len() > 0) {
@@ -122,7 +131,7 @@ TB.FunSay <- function(human, a, text, rude, polite, name) {
 			TB.Talked(b)
 			if (said && mates.len() > 1 && TBC.Rnd() < 0.4) {
 				local o = TB.OtherBot(b, null, mates)
-				if (o != null) TB.BotSay(o, TBC.EventLine("pile", null, TB.Ctx(human, o)), false, 1.5)
+				if (o != null) TB.SayChat(o, TBC.EventLine("pile", null, TB.Ctx(human, o)), false, 1.5, TB.lastSayT + 7.0)
 			}
 			return true
 		}
@@ -156,12 +165,12 @@ TB.FunAfterReply <- function(human, bot, a, rude, toxic) {
 	local tr = TB.Troll()
 	local roast = rude || (a.intent != null && (a.intent.name in TB.INSULTISH || a.intent.name == "kd_taunt"))
 	if (roast && tr != null && !TB.IsTroll(bot) && TBC.Rnd() < TB_CFG.troll_chance) {
-		TB.BotSay(tr, TBC.EventLine("troll_egg", null, TB.CtxTo(human, tr, bot)), false, 2.5)
+		TB.SayChat(tr, TBC.EventLine("troll_egg", null, TB.CtxTo(human, tr, bot)), false, 2.5, TB.lastSayT + 8.0)
 		return
 	}
 	if (TB.dirty > 0 && toxic && TBC.Rnd() < 0.25) {
 		local o = TB.OtherBot(bot)
-		if (o != null) { TB.BotSay(o, TBC.EventLine("duel_recall", null, TB.DuelCtx(TB.DuelRecallCtx(human, o))), false, 2.0); return }
+		if (o != null) { TB.SayChat(o, TBC.EventLine("duel_recall", null, TB.DuelCtx(TB.DuelRecallCtx(human, o))), false, 2.0, TB.lastSayT + 8.0); return }
 	}
 	TB.Banter(human, bot, 0.5)
 }
@@ -193,6 +202,8 @@ TB.OnKick <- function(human, a, rude, polite) {
 		// «го кого-то кикнем?» — ник не назван: переспрашивают
 		local me = false
 		foreach (w in TB.Words(a)) if (w == "меня" || w == "себя") me = true
+		// только что сами предлагали кикнуть тебя — «кого?» звучит тупо, отвечают «тебя»
+		if (Time() - TB.kickHumanT < 45.0) me = true
 		local b = TB.PickBot(a, human, true)
 		if (b != null) { TB.BotSay(b, TBC.EventLine((me || (rude && TBC.Rnd() < 0.5)) ? "kick_self" : "kick_who", null, TB.Ctx(human, b)), false); TB.Talked(b) }
 		return
@@ -242,8 +253,14 @@ TB.FunDeath <- function(v, a, params) {
 	// --- дуэль
 	if (TB.DuelOn()) {
 		if (!aBot && vBot) {
+			if (!(wid in TB.duel.ids) && wid != "" && TB.WeakerKill(wid, TB.duel)) {
+				// с глока в дуэли на диглах — не крысятство
+				if (TBC.Rnd() < 0.6) { local c = TB.DuelCtx(TB.Ctx(a, v)); c.dirtyw = (wid in TB.WBYID) ? TB.WBYID[wid].ins : "с пистолета"; TB.BotSay(v, TBC.EventLine("duel_weaker", null, c), false) }
+				return
+			}
 			if (!(wid in TB.duel.ids) && wid != "") {
 				TB.dirty++
+				TB.dirtyRound = TB.roundNo
 				TB.dirtyW = (wid in TB.WBYID) ? TB.WBYID[wid].ins : "со стволом"
 				TB.dirtyDisp = TB.duel.disp
 				TB.dirtyT = Time(); TB.dirtyBot = v.entindex()
@@ -262,6 +279,10 @@ TB.FunDeath <- function(v, a, params) {
 				return
 			}
 			if (TBC.Rnd() < 0.4) { TB.BotSay(v, TB.DEv("duel_win", v, TB.DuelCtx(TB.Ctx(a, v))), false); return }
+		} else if (aBot && !vBot && ("foe" in TB.duel) && ("free" in TB.duel) && a.entindex() != TB.duel.foe) {
+			// один на один, а влез другой бот
+			local f = PlayerInstanceFromIndex(TB.duel.foe)
+			if (f != null && f.IsValid() && TB.IsBot(f)) { TB.BotSay(f, TBC.EventLine("duel_interfere", null, TB.CtxTo(v, f, a)), false); return }
 		} else if (aBot && !vBot && TBC.Rnd() < 0.55) {
 			TB.BotSay(a, TB.DEv("duel_kill", a, TB.DuelCtx(TB.Ctx(v, a)), null, true), false)
 			return
@@ -271,8 +292,8 @@ TB.FunDeath <- function(v, a, params) {
 	if (aBot && vBot) {
 		if (Time() < TB.botKillNext) return
 		local r = TBC.Rnd()
-		if (r < TB_CFG.bot_kill_bot_chance) { TB.botKillNext = Time() + 10.0; TB.BotSay(a, TBC.EventLine("bot_kill_bot", null, TB.CtxTo(human, a, v)), false) }
-		else if (r < TB_CFG.bot_kill_bot_chance * 1.8) { TB.botKillNext = Time() + 10.0; TB.BotSay(v, TBC.EventLine("bot_killed_by_bot", null, TB.CtxTo(human, v, a)), false) }
+		if (r < TB_CFG.bot_kill_bot_chance) { TB.botKillNext = Time() + 10.0; TB.SayChat(a, TBC.EventLine("bot_kill_bot", null, TB.CtxTo(human, a, v)), false, 0.0, Time() + 10.0) }
+		else if (r < TB_CFG.bot_kill_bot_chance * 1.8) { TB.botKillNext = Time() + 10.0; TB.SayChat(v, TBC.EventLine("bot_killed_by_bot", null, TB.CtxTo(human, v, a)), false, 0.0, Time() + 10.0) }
 		return
 	}
 	if (aBot || !vBot) { if (!aBot) return; TB.hsRow = 0; return }   // тебя убили — серия сброшена
@@ -281,7 +302,7 @@ TB.FunDeath <- function(v, a, params) {
 	if (TB.lastVictim == v.entindex()) TB.victimRow++; else { TB.lastVictim = v.entindex(); TB.victimRow = 1 }
 	local s = TB.St(a.entindex())
 	if (Time() < TB.accuseNext || !TB_CFG.accuse_enabled) {
-		if (TB.dirty > 0 && TBC.Rnd() < 0.12) TB.BotSay(v, TBC.EventLine("duel_recall", null, TB.DuelCtx(TB.DuelRecallCtx(a, v))), false, 1.0)
+		if (TB.dirty > 0 && TB.roundNo - TB.dirtyRound <= 3 && TBC.Rnd() < 0.12) TB.SayChat(v, TBC.EventLine("duel_recall", null, TB.DuelCtx(TB.DuelRecallCtx(a, v))), false, 1.0, Time() + 10.0)
 		return
 	}
 	local ev = null
@@ -304,12 +325,14 @@ TB.AccuseReply <- function(human, delay) {
 	local mates = TB.Bots(human.GetTeam())
 	if (mates.len() == 0 || TBC.Rnd() > 0.45) return
 	local m = TBC.Pick(mates)
-	TB.BotSay(m, TBC.EventLine((TB.resp >= 45 || TBC.Rnd() < 0.3) ? "accuse_defend" : "accuse_join", null, TB.Ctx(human, m)), false, delay)
+	TB.SayChat(m, TBC.EventLine((TB.resp >= 45 || TBC.Rnd() < 0.3) ? "accuse_defend" : "accuse_join", null, TB.Ctx(human, m)), false, delay, TB.lastSayT + 8.0)
 }
 
 // ------------------------------------------------------------ раунды
 TB.FunRoundStart <- function() {
 	TB.DuelRecover()
+	// страховка: дуэли нет, а квоты всё ещё дуэльные — вернуть
+	if (!TB.DuelOn() && TB.cvOrig != null) TB.DuelRestoreCv()
 	TB.roundNo++
 	TB.roundStartT = Time()
 	TB.dropPending = null
@@ -319,6 +342,7 @@ TB.FunRoundStart <- function() {
 	if (TB.duel != null) {
 		if (TB.duel.active && TB.duel.round < TB.roundNo) {
 			TB.DuelStop()
+			TB.offerNextRound = TB.roundNo + 3   // сразу после дуэли новую не предлагают
 			local bots = TB.Bots()
 			if (bots.len() > 0 && h != null) { local b = TBC.Pick(bots); TB.BotSay(b, TBC.EventLine("duel_end", null, TB.Ctx(h, b)), false, 1.5) }
 		} else if (!TB.duel.active) {
@@ -396,6 +420,7 @@ TB.FunAfterRound <- function(winner) {
 				TB.worstRow[human.entindex()] <- 0
 				local sp = TBC.Pick(mates)
 				if (!TB.BotSay(sp, TBC.EventLine("kick_propose_human", null, TB.Ctx(human, sp)), false, delay + 1.0)) return
+				TB.kickHumanT = TB.lastSayT
 				local v = TB.OtherBot(sp)
 				if (v != null) TB.BotSay(v, TBC.EventLine(TBC.Rnd() < 0.5 ? "kick_vote_yes" : "kick_host", null, TB.Ctx(human, v)), false, delay + 3.0)
 				local v2 = TB.OtherBot(sp, v)
@@ -493,6 +518,7 @@ TB.AnyPre <- function(words, list) {
 }
 // «случайно», «не знал», «не заметил» — оправдание
 TB.IsExcuse <- function(words) {
+	if (TB.AnyPre(words, ["хуже", "худш", "слабее", "плохим", "хуёвым", "хуевым"])) return true   // «я даже с более плохим оружием вынес»
 	if (TB.AnyPre(words, ["случайн", "нечаян", "неспециальн", "незнал", "незаметил", "рефлекс", "машинальн", "на_автомате"])) return true
 	foreach (x in ["знал", "заметил", "специальн", "хотел", "видел", "понял"]) if (TB.Pair(words, "не", x) || TB.Pair(words, "нез", x)) return true
 	return TB.Pair(words, "по", "привычк") || TB.Pair(words, "на", "автомат")
@@ -517,11 +543,16 @@ TB.IsPostpone <- function(words, name) {
 // «отмена», «передумал», «без дуэли»
 TB.IsCancel <- function(words) {
 	if (TB.AnyPre(words, ["отмен", "отбой", "передумал", "отставить", "неохота"])) return true
+	if (TB.AnyPre(words, ["пошутил", "шучу", "шутка", "прикол", "хватит"]) || TB.Pair(words, "больше", "не")) return true
 	return TB.Pair(words, "без", "дуэл") || TB.Pair(words, "не", "хочу") || TB.Pair(words, "не", "буду") || TB.Pair(words, "не", "надо")
 }
 TB.OnSorry <- function(human, a, polite) {
-	local lr = TB.lastRude
-	if (lr == null || Time() - lr.t > 120.0) return false
+	local lr = TB.lastRude, words = TB.Words(a)
+	local old = lr == null || Time() - lr.t > 120.0
+	// «сорян за тот случай» — про нарушенную дуэль
+	if (TB.dirty > 0 && (old || TB.AnyPre(words, ["случа", "дуэл", "глок", "крыс", "тогда"]) || TB.Pair(words, "тот", "раз")))
+		return TB.ForgiveDirty(human, a, polite)
+	if (old) return false
 	local b = TB.FindMentioned(a.toks, TB.Bots())
 	if (b == null) {
 		b = PlayerInstanceFromIndex(lr.idx)
@@ -550,110 +581,169 @@ TB.DuelSpeaker <- function(human, a) {
 }
 TB.MODAL <- {}
 foreach (w in ["можно", "нельзя", "без", "не", "правило", "правила", "разрешено", "разрешаю", "запрещено", "норм", "тоже", "но"]) TB.MODAL[w] <- 1
-TB.DuelTalk <- function(human, a, words, name, rude, polite) {
+// «так мы на ножах или чё?» -> "status", «чё сразу на диглах?» -> "why", иначе null
+TB.DuelQuestion <- function(words, text) {
+	local q = text.find("?") != null
+	local hm = TB.AnyW(words, ["чё", "че", "чо", "что", "чего", "шо"])
+	if (TB.AnyPre(words, ["почему", "зачем", "нахуя", "нахера", "нафига", "накой"]) || (hm && TB.AnyW(words, ["сразу"]))) return "why"
+	if ((TB.AnyW(words, ["или"]) && (q || hm)) || TB.Pair(words, "так", "мы") || (q && TB.Pair(words, "мы", "на")) || TB.Pair(words, "на", "чем") || TB.Pair(words, "на", "чём")) return "status"
+	return null
+}
+TB.AnyW <- function(words, list) {
+	foreach (w in words) foreach (x in list) if (w == x) return true
+	return false
+}
+// «один на один», «1на1», «раз на раз», «пвп»
+TB.IsOneVOne <- function(words) {
+	if (TB.AnyW(words, ["1на1", "1v1", "1x1", "1х1", "пвп", "pvp"])) return true
+	for (local i = 0; i + 2 < words.len(); i++)
+		if (words[i + 1] == "на" && ((TB.Pre(words[i], "один") && TB.Pre(words[i + 2], "один")) || (words[i] == "1" && words[i + 2] == "1") || (words[i] == "раз" && words[i + 2] == "раз"))) return true
+	return false
+}
+// живой бот-противник (для «давай дуэль» без ника)
+TB.AliveFoe <- function(a, human) {
+	local b = TB.FindMentioned(a.toks, TB.Bots())
+	if (b != null) return b
+	local foes = []
+	foreach (x in TB.Bots(human.GetTeam() == 2 ? 3 : 2)) if (TB.Alive(x)) foes.push(x)
+	return (foes.len() > 0) ? TBC.Pick(foes) : TB.PickBot(a, human, false)
+}
+TB.DSay <- function(b, ev, ctx) { TB.BotSay(b, TBC.EventLine(ev, null, ctx), false); TB.Talked(b) }
+TB.DuelTalk <- function(human, a, words, name, rude, polite, text = "") {
 	local d = TB.duel, o = TB.offer, now = Time()
 	if (o != null && now > o.until) { TB.offer = null; o = null }
 	if (o != null && now < o.from) o = null   // ещё не появилось в чате
-	local isDuel = name == "duel"
+	local weps = TB.ParseWeapons(a), naW = false
+	foreach (p in weps) if (p.na && !(("w" in p) && p.w.cat == "grenade")) naW = true
+	local onev = TB.IsOneVOne(words)
+	// «на калашах», «все на awp» — это про дуэль, даже если тема распозналась иначе
+	local isDuel = name == "duel" || onev || (naW && name != "drop")
 	local pos = [], neg = []
-	foreach (p in TB.ParseWeapons(a)) {
+	if (isDuel) foreach (p in weps) {
 		if (("w" in p) && p.w.cat == "grenade") continue   // гранаты — это правило, а не дуэль
 		if (p.neg) neg.push(p); else pos.push(p)
 	}
-	if (!isDuel) { pos = []; neg = [] }   // «скинь AWP» во время дуэли — это не про дуэль
 	local rules = TB.DuelRules(words)
 	if (rules != null && !isDuel) {
 		local modal = false
 		foreach (w in words) if (w in TB.MODAL) modal = true
 		if (!modal) rules = null
 	}
-	local broke = TB.IsBroke(words), post = TB.IsPostpone(words, name), cancel = TB.IsCancel(words) && (isDuel || d != null || o != null)
+	local knifeW = TB.AnyPre(words, ["нож"])
+	// «чё вы все на ножах», «мы больше не на ножах»
+	local complain = knifeW && TB.AnyW(words, ["вы", "все", "чё", "че", "чо", "опять", "нахуя", "нахера", "зачем", "почему", "заебали"]) && !TB.AnyW(words, ["давай", "давайте", "го", "погнали"])
+	local broke = TB.IsBroke(words), post = TB.IsPostpone(words, name)
+	local cancel = TB.IsCancel(words) && (isDuel || knifeW || d != null || o != null)
+	local q = (isDuel || complain) ? TB.DuelQuestion(words, text) : null
 	local excuse = TB.IsExcuse(words) || name == "sorry"
-	local negOnly = neg.len() > 0 && pos.len() == 0
+	local negOnly = neg.len() > 0 && pos.len() == 0 && !onev
+	if (isDuel) TB.offerNextRound = TB.Max(TB.offerNextRound, TB.roundNo + 2)
 
 	// --- дуэли нет и никто не предлагал
 	if (d == null && o == null) {
-		if (isDuel && (negOnly || TB.IsCancel(words))) {
-			local b = TB.PickBot(a, human, false)
-			if (b != null) { TB.BotSay(b, TBC.EventLine("duel_cancel_none", null, TB.Ctx(human, b)), false); TB.Talked(b) }
+		if (complain || (cancel && knifeW)) {
+			// боты всё ещё на ножах, хотя дуэли нет — вернуть им стволы
+			TB.AllWeapons()
+			local b = TB.AliveFoe(a, human)
+			if (b != null) TB.DSay(b, "duel_unstuck", TB.Ctx(human, b))
 			return true
 		}
-		return false
+		if (!isDuel) return false
+		local b = TB.PickBot(a, human, false)
+		if (b == null) return true
+		if (q == "status") { TB.DSay(b, "duel_status_none", TB.Ctx(human, b)); return true }
+		if (q == "why" || negOnly || cancel) { TB.DSay(b, "duel_cancel_none", TB.Ctx(human, b)); return true }
+		TB.OnDuel(human, a, rude, polite)
+		return true
 	}
 	// --- бот предложил дуэль, ты ответил не просто «да/нет»
 	if (d == null) {
 		local b = PlayerInstanceFromIndex(o.bot)
 		if (b == null || !b.IsValid() || !TB.IsBot(b)) { TB.offer = null; return false }
+		local c = TB.Ctx(human, b); c.duel <- o.spec.disp
+		if (q == "why") { TB.DSay(b, "duel_why", c); return true }
+		if (q == "status") { TB.DSay(b, "duel_status_offer", c); return true }
 		if (cancel || negOnly) {
 			TB.offer = null
-			local c = TB.Ctx(human, b); c.duel <- o.spec.disp
 			TB.BotSay(b, TB.DEv("duel_offer_declined", b, c, o.spec, true), false)
 			TB.Respect(-2); TB.Talked(b)
 			return true
 		}
-		local spec = (pos.len() > 0) ? TB.SpecOf(pos) : o.spec
+		local spec = onev ? TB.OneVOneSpec(b, a) : ((pos.len() > 0) ? TB.SpecOf(pos) : o.spec)
 		if (rules != null) TB.ApplyRules(spec, rules)
 		if (broke || post) { TB.offer = null; TB.StartDuel(spec, b, human, "duel_offer_accepted", "duel_postpone", true); return true }
-		if (pos.len() > 0 || rules != null) {
+		if (pos.len() > 0 || rules != null || onev) {
 			TB.offer = null
 			TB.StartDuel(spec, b, human, "duel_offer_accepted", "duel_accept_next")
-			if (rules != null) { local c = TB.DuelCtx(TB.Ctx(human, b)); c.rules = TB.RulesText(rules); TB.BotSay(b, TBC.EventLine("duel_rule_ok", null, c), false) }
+			if (rules != null) { local c2 = TB.DuelCtx(TB.Ctx(human, b)); c2.rules = TB.RulesText(rules); TB.BotSay(b, TBC.EventLine("duel_rule_ok", null, c2), false) }
 			return true
 		}
 		return false
 	}
 	// --- дуэль договорена (идёт сейчас или со следующего раунда)
 	local recent = now - TB.dirtyT < 45.0 && TB.dirty > 0
-	if (!(broke || post || (excuse && recent) || cancel || negOnly || pos.len() > 0 || rules != null || isDuel)) return false
+	if (!(broke || post || (excuse && recent) || cancel || complain || negOnly || pos.len() > 0 || rules != null || isDuel)) return false
 	local b = TB.DuelSpeaker(human, a)
 	if (b == null) return false
 	local ctx = TB.DuelCtx(TB.Ctx(human, b))
 	TB.Talked(b)
+	if (q == "why") { TB.DSay(b, "duel_why_agreed", ctx); return true }
+	if (q == "status" || (complain && !cancel)) { TB.DSay(b, "duel_status", ctx); return true }
 	if (broke || post) {
 		// «не купил AWP» — верим: начнём со следующего раунда, а килл «не тем» прощаем
 		local forgive = broke && recent
 		if (forgive) { TB.dirty--; TB.dirtyT = -100.0; TB.Respect(15); TB.CancelTag("dirty") }
 		TB.DuelPostpone()
-		TB.BotSay(b, TBC.EventLine(forgive ? "duel_postpone_forgive" : "duel_postpone", null, ctx), false)
+		TB.DSay(b, forgive ? "duel_postpone_forgive" : "duel_postpone", ctx)
 		return true
 	}
 	if (excuse && recent) {
 		TB.dirtyT = -100.0
 		local ok = TBC.Rnd() < ((TB.resp >= 30) ? 0.7 : 0.35) + (polite ? 0.15 : 0.0)
 		if (ok) { TB.dirty--; TB.Respect(12); TB.CancelTag("dirty") }
-		TB.BotSay(b, TBC.EventLine(ok ? "duel_forgive" : "duel_forgive_no", null, ctx), false)
+		TB.DSay(b, ok ? "duel_forgive" : "duel_forgive_no", ctx)
 		return true
 	}
 	if (cancel || negOnly) {
 		// «не на AWP», а договорились на ножах — это просто уточнение
 		local same = cancel
 		foreach (p in neg) if (TB.SpecOf([p]).disp == d.disp) same = true
-		if (!same) { TB.BotSay(b, TBC.EventLine("duel_clarify", null, ctx), false); return true }
+		if (!same) { TB.DSay(b, "duel_clarify", ctx); return true }
 		TB.DuelStop()
-		TB.BotSay(b, TBC.EventLine("duel_cancel", null, ctx), false)
+		TB.DSay(b, "duel_cancel", ctx)
 		return true
 	}
-	if (pos.len() > 0) {
-		local spec = TB.SpecOf(pos)
+	if (pos.len() > 0 || onev) {
+		local spec = onev ? TB.OneVOneSpec(b, a) : TB.SpecOf(pos)
 		spec.bomb = d.bomb
 		if (rules != null) TB.ApplyRules(spec, rules)
 		if (spec.disp != d.disp) {
 			TB.DuelReplace(spec)
 			ctx.duel = d.disp
-			TB.BotSay(b, TBC.EventLine("duel_switch", null, ctx), false)
+			TB.DSay(b, "duel_switch", ctx)
 			if (rules != null) { ctx.rules = TB.RulesText(rules); TB.BotSay(b, TBC.EventLine("duel_rule_ok", null, ctx), false) }
 			return true
 		}
 	}
 	if (rules != null) {
-		local was = d.active
-		if (was) TB.DuelRestoreCv(d)
 		TB.ApplyRules(d, rules)
-		if (was) TB.DuelActivate()
+		if (d.active) TB.DuelActivate()
 		ctx.rules = TB.RulesText(rules)
-		TB.BotSay(b, TBC.EventLine("duel_rule_ok", null, ctx), false)
+		TB.DSay(b, "duel_rule_ok", ctx)
 		return true
 	}
-	TB.BotSay(b, TBC.EventLine("duel_already", null, ctx), false)
+	TB.DSay(b, "duel_already", ctx)
+	return true
+}
+TB.Max <- function(a, b) { return a > b ? a : b }
+// простить старое нарушение: «да сорян за тот случай»
+TB.ForgiveDirty <- function(human, a, polite) {
+	local b = TB.FindMentioned(a.toks, TB.Bots())
+	if (b == null && TB.dirtyBot > 0) { local p = PlayerInstanceFromIndex(TB.dirtyBot); if (p != null && p.IsValid() && TB.IsBot(p)) b = p }
+	if (b == null) b = TB.PickBot(a, human, false)
+	if (b == null) return false
+	local ok = TBC.Rnd() < ((TB.resp >= 30) ? 0.75 : 0.4) + (polite ? 0.1 : 0.0)
+	if (ok) { TB.dirty = 0; TB.dirtyT = -100.0; TB.Respect(10); TB.CancelTag("dirty") }
+	TB.DSay(b, ok ? "duel_forgive" : "duel_forgive_no", TB.DuelCtx(TB.DuelRecallCtx(human, b)))
 	return true
 }

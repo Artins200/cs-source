@@ -61,7 +61,7 @@ TB.St <- function(uid) {
 TB.ResetRound <- function() { foreach (s in TB.stats) { s.rk = 0; s.rd = 0; s.rdmg = 0 } TB.roundDeath = false; TB.bombPlanted = false }
 TB.ResetMatch <- function() {
 	TB.stats = {}; TB.matchOver = false; TB.sandbag = null; TB.resp = TB_CFG.start_respect
-	if ("worstRow" in TB) { TB.worstRow = {}; TB.roundNo = 0; TB.kickNextRound = 0; TB.offer = null }
+	if ("worstRow" in TB) { TB.worstRow = {}; TB.roundNo = 0; TB.kickNextRound = 0; TB.offer = null; TB.offerNextRound = 0; TB.dirtyRound = -100 }
 	if (("duel" in TB) && TB.duel != null) TB.DuelStop()
 }
 TB.NoteUid <- function(userid) {
@@ -236,16 +236,27 @@ TB.Push <- function(item) {
 TB.Later <- function(delay, fn) { TB.Push({ t = Time() + delay, f = fn }) }
 // метка для группы реплик (TB.tag = "dirty" ... TB.tag = null), чтобы потом отменить несказанное
 TB.tag <- null
-TB.CancelTag <- function(tag) {
+TB.CancelTag <- function(tag, after = -1.0) {
 	local q = [], c = []
-	foreach (x in TB.queue) if (!("tag" in x) || x.tag != tag) q.push(x)
-	foreach (x in TB.chat) if (!("tag" in x) || x.tag != tag) c.push(x)
+	foreach (x in TB.queue) if (!("tag" in x) || x.tag != tag || x.t <= after) q.push(x)
+	foreach (x in TB.chat) if (!("tag" in x) || x.tag != tag || x.t <= after) c.push(x)
 	TB.queue = q; TB.chat = c
+}
+// болтовня ботов между собой (подколы, поддакивания, тролль). Когда ты пишешь, ещё не
+// сказанная болтовня отменяется — иначе она выглядит как ответ на твоё сообщение.
+TB.SayChat <- function(bot, text, teamOnly, extra = 0.0, within = null) {
+	local old = TB.tag
+	TB.tag = "chatter"
+	local r = TB.BotSay(bot, text, teamOnly, extra, false, null, within)
+	TB.tag = old
+	return r
 }
 
 // бот "печатает" (задержка по длине) и отправляет
 // -> true, если сообщение поставлено в очередь (false — пропущено)
-TB.BotSay <- function(bot, text, teamOnly, extra = 0.0, raw = false, after = null) {
+// within — крайний срок (Time()): не успели сказать к нему — реплика устарела, не говорим
+TB.lastSayT <- 0.0
+TB.BotSay <- function(bot, text, teamOnly, extra = 0.0, raw = false, after = null, within = null) {
 	if (bot == null || text == null || text == "") return false
 	local snd = ""
 	if (text[0] == 2) {
@@ -287,11 +298,12 @@ TB.BotSay <- function(bot, text, teamOnly, extra = 0.0, raw = false, after = nul
 		}
 	}
 	// очередь слишком длинная — устаревшую реплику просто не говорим
-	if (!raw && !prio && t - now > TB_CFG.chat_max_delay) {
+	if (!raw && !prio && (t - now > TB_CFG.chat_max_delay || (within != null && t > within))) {
 		if (TB_CFG.debug) printl("[ToxicBots] (пропущено, очередь) " + text)
 		return false
 	}
 	local tag = TB.tag
+	TB.lastSayT = t
 	TB.chat.push({ t = t, len = chars, bot = idx, tag = tag })
 	TB.botNext[idx] <- t + 0.5
 	local who = TB.Name(bot)
@@ -395,6 +407,7 @@ TB.OnHumanSay <- function(human, text) {
 	if (!TB_CFG.enabled) return
 	if (TB.Bots().len() == 0) return
 	local a = TBC.Analyze(text)
+	TB.CancelTag("chatter", Time() + 0.8)
 	TB.prio = true
 	local rudeWord = TBC.RudeWord(a), polite = TBC.IsPolite(a.toks)
 	local name = (a.intent != null) ? a.intent.name : ""
@@ -420,6 +433,7 @@ TB.OnHumanSay <- function(human, text) {
 	local r = TBC.Reply(a, side, TB.Ctx(human, bot), !toxic)
 	if (TB_CFG.debug) printl("[ToxicBots]   " + TB.Name(bot) + " -> " + r[1] + " слово=" + a.word)
 	TB.BotSay(bot, r[0], false)
+	local replyT = TB.lastSayT
 	TB.Talked(bot)
 	if (rude) TB.NoteRude(human, bot, a)
 	TB.FunAfterReply(human, bot, a, rude, toxic)
@@ -429,7 +443,7 @@ TB.OnHumanSay <- function(human, text) {
 	if (all.len() > 1 && TBC.Rnd() < (toxic ? TB_CFG.pile_chance : TB_CFG.pile_chance * 0.4)) {
 		local other = bot
 		for (local n = 0; n < 5 && other.entindex() == bot.entindex(); n++) other = TBC.Pick(all)
-		if (other.entindex() != bot.entindex()) TB.BotSay(other, TB.Ev("pile", other, TB.Ctx(human, other), null, toxic), false, 1.5)
+		if (other.entindex() != bot.entindex()) TB.SayChat(other, TB.Ev("pile", other, TB.Ctx(human, other), null, toxic), false, 1.5, replyT + 7.0)
 	}
 }
 
@@ -643,7 +657,7 @@ TB.Command <- function(human, text) {
 		TB.temper = {}
 		ClientPrint(human, 3, "\x04[ToxicBots]\x01 токсичность = " + TB_CFG.toxicity)
 	}
-	else if (arg == "duel") { if (TB.duel != null) TB.DuelStop(); TB.offer = null; ClientPrint(human, 3, "\x04[ToxicBots]\x01 дуэль отменена, боты снова с оружием") }
+	else if (arg == "duel") { if (TB.duel != null) TB.DuelStop(); TB.offer = null; TB.AllWeapons(); ClientPrint(human, 3, "\x04[ToxicBots]\x01 дуэль отменена, боты снова с оружием") }
 	else if (arg == "mood") ClientPrint(human, 3, "\x04[ToxicBots]\x01 уважение ботов к тебе: " + TB.resp.tointeger() + "/100, токсичность: " + TB_CFG.toxicity)
 	else ClientPrint(human, 3, "\x04[ToxicBots]\x01 !tb on | off | stat | mood | toxic 0.3 | duel (отменить дуэль) | debug")
 }

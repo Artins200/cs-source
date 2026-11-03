@@ -44,7 +44,7 @@ def analyze(data, text):
     explain = any(t.startswith("объясн") or t.startswith("поясн") for t in flat)
     mat = any(any(st in t for st in MAT_STEMS) for t in flat)
     return {'intent': it, 'score': s, 'word': raws[cap] if cap >= 0 else '', 'toks': toks,
-            'explain': explain, 'mat': mat}
+            'explain': explain, 'mat': mat, 'q': '?' in text}
 
 
 def classic_norm(text):
@@ -115,7 +115,8 @@ def reply(data, text, side, ctx, r=random, nice=False):
         pool = nice_pool(it, side, r) if it is not None else []
         why = 'nice ' + (it['name'] if it is not None else '-')
         if not pool:
-            pool, why = data.events['nice_fallback']['all'], why + ' (nice_fallback)'
+            ev = 'nice_fallback_q' if (a['q'] and it is None) else 'nice_fallback'
+            pool, why = data.events[ev]['all'], why + ' (' + ev + ')'
         return tidy(gen.expand(r.choice(pool), ctx)), '%s %.1f' % (why, a['score'])
     rep, sim = best_classic(data, a['toks'])
     if rep and r.random() < (0.8 if sim > 0.97 else 0.55):
@@ -126,6 +127,8 @@ def reply(data, text, side, ctx, r=random, nice=False):
             pool, why = data.events['explain']['all'], 'explain+' + it['name']
         else:
             pool, why = pick_pool(it, side, r), it['name']
+    elif a['q']:
+        pool, why = data.events['fallback_q']['all'], 'fallback_q'
     else:
         pool, why = data.events['fallback']['all'], 'fallback'
     core = tidy(gen.expand(r.choice(pool), ctx))

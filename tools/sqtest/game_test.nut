@@ -61,9 +61,20 @@ class FakeEnt {
 		return 0
 	}
 }
-::Convars <- { GetInt = function(n) { return n == "mp_maxrounds" ? 4 : (n.find("bot_allow") == 0 ? 1 : 0) },
+// консоль как в игре: команды применяются только на следующем кадре (run)
+::CV <- {}
+::CVQ <- []
+::Convars <- { GetInt = function(n) { if (n in CV) return CV[n]; return n == "mp_maxrounds" ? 4 : (n.find("bot_allow") == 0 ? 1 : 0) },
 	GetStr = function(n) { return "always" } }
-::SendToServerConsole <- function(c) { print("   SERVERCMD " + c + "\n") }
+::SendToServerConsole <- function(c) { print("   SERVERCMD " + c + "\n"); CVQ.push(c) }
+::CVFlush <- function() {
+	foreach (c in CVQ) foreach (part in split(c, ";")) {
+		local w = split(part, " ")
+		if (w.len() == 2 && w[0].find("bot_allow") == 0) CV[w[0]] <- w[1].tointeger()
+	}
+	CVQ = []
+}
+::KNIVES <- function() { local z = 0; foreach (k, v in CV) if (k.find("bot_allow") == 0 && v == 0) z++; return z }
 ::TEAMS <- [FakeEnt(50, 2, false, "t"), FakeEnt(51, 3, false, "ct")]
 ::BOMB <- false
 ::Entities <- { FindByClassname = function(prev, cls) {
@@ -88,7 +99,7 @@ class FakeEnt {
 ::__CollectGameEventCallbacks <- function(scope) { foreach (k, v in scope) EV[k.slice(12)] <- v }
 dofile(DIR + "/mapspawn.nut")
 // think вызывается так, как попросил скрипт (return = через сколько секунд)
-::run <- function(sec) { local end = NOW + sec; while (NOW < end) { NOW += 0.05; if (THINK && NOW >= NEXT - 0.001) { THINKS++; NEXT = NOW + THINK() } } }
+::run <- function(sec) { local end = NOW + sec; while (NOW < end) { NOW += 0.05; CVFlush(); if (THINK && NOW >= NEXT - 0.001) { THINKS++; NEXT = NOW + THINK() } } }
 ::say <- function(t) { print("Игрок: " + t + "\n"); EV.player_say({ userid = 1, text = t }); run(8) }
 TB_CFG.debug = false
 EV.round_start({})
@@ -353,3 +364,61 @@ run(8)
 PL[6].name = "Kirk"
 print("--- склонения: " + TB.Clean("1 килов, 3 килов, 12 килов, 22 смертей, 5 фрагов, 21 фрагов") + "\n")
 print("--- конец новое 3\n")
+
+print("\n=============== новое 4: второй лог игрока\n")
+TB.DuelStop(); TB.offer = null; TB.dirty = 0; TB.resp = 70; run(2)
+print("--- после ножевой дуэли со сменой оружия боты не должны остаться на ножах\n")
+say("давай на ножах")
+run(3)
+print("   duel = " + (TB.duel != null ? TB.duel.disp + " active=" + TB.duel.active : "null") + " zeros=" + KNIVES() + "\n")
+say("не, давай на диглах")
+run(1)
+say("ладно давай опять на ножах")
+run(3)
+EV.round_end({ winner = 3, reason = 8, message = "#CTs_Win" }); run(8)
+EV.round_start({}); run(3)
+print("   duel = " + (TB.duel != null ? TB.duel.disp : "null") + " zeros=" + KNIVES() + " (должно быть 0)\n")
+print("--- «чё вы все на ножах», дуэли нет\n")
+CV.bot_allow_rifles <- 0; CV.bot_allow_pistols <- 0
+say("а чё вы бля все на ебанных ножах")
+run(4)
+print("   zeros=" + KNIVES() + " (должно быть 0)\n")
+print("--- вопросы про дуэль\n")
+say("давай на диглах"); run(3)
+say("так мы на диглах или чё?"); run(3)
+say("чё сразу на диглах?"); run(3)
+say("мы больше не на диглах, хватит"); run(3)
+print("   duel = " + (TB.duel != null ? TB.duel.disp : "null") + "\n")
+print("--- мёртвый бот соглашается\n")
+PL[5].alive = false
+say("vladimir давай на ножах"); run(3)
+print("   duel = " + (TB.duel != null ? TB.duel.disp + " active=" + TB.duel.active : "null") + "\n")
+TB.DuelStop(); PL[5].alive = true
+PL[6].alive = false
+say("kirk ты где?"); run(3)
+PL[6].alive = true
+print("--- один на один\n")
+say("brett одина на один?"); run(3)
+print("   duel = " + (TB.duel != null ? TB.duel.disp + " free=" + ("free" in TB.duel) + " zeros=" + KNIVES() : "null") + "\n")
+TB.duel.active = true
+EV.player_death({ userid = 1, attacker = 6, weapon = "ak47", headshot = false }); run(5)
+say("kirk не вмешивайся"); run(3)
+TB.DuelStop()
+print("--- убил хуже договорённого\n")
+say("давай на диглах"); run(3)
+TB.duel.active = true
+EV.player_death({ userid = 5, attacker = 1, weapon = "glock", headshot = false }); run(5)
+print("   dirty = " + TB.dirty + "\n")
+EV.player_death({ userid = 4, attacker = 1, weapon = "awp", headshot = false }); run(5)
+print("   dirty = " + TB.dirty + "\n")
+TB.DuelStop()
+TB.roundNo += 4
+say("давай на ножах"); run(3)
+say("да сорян за тот случай"); run(3)
+print("   dirty = " + TB.dirty + "\n")
+TB.DuelStop(); TB.dirty = 0
+print("--- болтовня отменяется, когда пишешь\n")
+TB.SayChat(PL[2], "ЭТО ДОЛЖНО ОТМЕНИТЬСЯ", false, 9.0)
+say("ну чё пацаны")
+run(12)
+print("--- конец новое 4\n")

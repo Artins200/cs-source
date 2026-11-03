@@ -76,6 +76,7 @@ TB.ParseWeapons <- function(a) {
 		local p = TB.WeaponOf(w)
 		if (p == null) continue
 		local p1 = (i > 0) ? words[i - 1] : "", p2 = (i > 1) ? words[i - 2] : ""
+		p.na <- p1 == "на" || p1 == "пвп" || p1 == "дуэль"
 		p.neg <- p1 == "не" || p1 == "без" || p1 == "кроме" || ((p1 == "на" || p1 == "с" || p1 == "со") && (p2 == "не" || p2 == "без"))
 		out.push(p)
 	}
@@ -224,6 +225,8 @@ TB.dirtyW <- ""        // чем («с AWP»)
 TB.dirtyDisp <- ""     // какая была дуэль («на ножах»)
 TB.dirtyT <- -100.0    // когда было последнее нарушение (можно оправдаться: «не купил», «случайно»)
 TB.dirtyBot <- -1      // кого убили не тем оружием
+TB.dirtyRound <- -100  // в каком раунде нарушил (отказы в дуэлях со временем забываются)
+TB.offerNextRound <- 0 // раньше этого раунда боты сами дуэль не предлагают
 TB.offer <- null       // бот предложил дуэль: { spec, bot, until }
 TB.roundStartT <- -100.0
 TB.roundNo <- 0
@@ -272,6 +275,28 @@ TB.DuelSpec <- function(a) {
 	local s = TB.SpecOf(pos)
 	local r = TB.DuelRules(TB.Words(a))
 	if (r != null && r.bomb != null) s.bomb = r.bomb
+	return s
+}
+// «сила» оружия: убил хуже договорённого (глок в дуэли на диглах) — это не нарушение
+TB.WTIER <- { knife = 0, glock = 1, usp = 1, p228 = 1, elite = 1, fiveseven = 1, hegrenade = 1, deagle = 2,
+	tmp = 3, mac10 = 3, mp5navy = 3, ump45 = 3, p90 = 3, m3 = 3, xm1014 = 3, scout = 3,
+	galil = 4, famas = 4, ak47 = 4, m4a1 = 4, sg552 = 4, aug = 4, m249 = 4, awp = 5, g3sg1 = 5, sg550 = 5 }
+TB.WeakerKill <- function(wid, d) {
+	if (!(wid in TB.WTIER) || ("free" in d)) return false
+	local top = 0
+	foreach (id, v in d.ids) if ((id in TB.WTIER) && TB.WTIER[id] > top) top = TB.WTIER[id]
+	return TB.WTIER[wid] < top
+}
+// «один на один» с конкретным ботом: оружие любое (если не названо), остальным лезть нельзя
+TB.OneVOneSpec <- function(bot, a) {
+	local s = TB.DuelSpec(a), named = false
+	foreach (p in TB.ParseWeapons(a)) if (!p.neg && !(("w" in p) && p.w.cat == "knife")) named = true
+	if (!named) {
+		s.ids = {}; foreach (e in TB.WPN) s.ids[e.id] <- 1
+		s.cats = {}; foreach (cat, cv in TB.CAT_CV) s.cats[cat] <- 1
+		s.give = null; s.disp = "один на один"; s.free <- true
+	}
+	s.foe <- bot.entindex()
 	return s
 }
 TB.IsKnifeDuel <- function(s) { return s != null && s.give == null && s.cats.len() == 0 }
@@ -338,23 +363,33 @@ TB.DuelOn <- function() { return TB.duel != null && TB.duel.active }
 
 TB.DuelActivate <- function() {
 	local d = TB.duel
+	if (("free" in d) && TB.cvOrig != null) TB.DuelRestoreCv()   // один на один — ботам все стволы
 	d.active = true
 	d.round = TB.roundNo
 	TB.giveNext = {}
 	// бот-ИИ: разрешаем только нужный класс оружия (действует на всех ботов)
-	if (TB_CFG.duel_scope == "all") {
-		d.cv <- {}
-		local cmd = ""
-		foreach (cat, cv in TB.CAT_CV) {
-			local old = null
-			try { old = Convars.GetInt(cv) } catch (e) {}
-			d.cv[cv] <- (old == null) ? 1 : old
-			cmd += cv + " " + ((cat in d.cats) ? 1 : 0) + ";"
+	if (TB_CFG.duel_scope == "all" && !("free" in d)) {
+		// исходные квоты читаем ОДИН раз, пока дуэльные не применены. Команды консоли
+		// выполняются только на следующем кадре: если перечитать сразу после «вернуть»,
+		// прочитаются ещё дуэльные нули — и боты навсегда останутся с ножами.
+		if (TB.cvOrig == null) {
+			local orig = {}, any = false
+			foreach (cat, cv in TB.CAT_CV) {
+				local old = null
+				try { old = Convars.GetInt(cv) } catch (e) {}
+				orig[cv] <- (old == null) ? 1 : old
+				if (orig[cv] != 0) any = true
+			}
+			// все нули — это хвост старой дуэли, а не настройка игрока
+			if (!any) foreach (cv, v in orig) orig[cv] = 1
+			TB.cvOrig = orig
+			// карта сменится посреди дуэли — восстановим квоты при следующей загрузке
+			local back = ""
+			foreach (cv, v in orig) back += cv + " " + v + ";"
+			try { StringToFile(TB.DUEL_FILE, back) } catch (e) {}
 		}
-		// карта сменится посреди дуэли — восстановим квоты при следующей загрузке
-		local back = ""
-		foreach (cv, v in d.cv) back += cv + " " + v + ";"
-		try { StringToFile(TB.DUEL_FILE, back) } catch (e) {}
+		local cmd = ""
+		foreach (cat, cv in TB.CAT_CV) cmd += cv + " " + ((cat in d.cats) ? 1 : 0) + ";"
 		TB.SrvCmd(cmd)
 	}
 	TB.DuelEnforce(true)
@@ -365,12 +400,21 @@ TB.DuelActivate <- function() {
 		try { TB.SpawnWeapon(TB.duel.give, h.GetOrigin() + Vector(0, 0, 16)) } catch (e) {}
 	})
 }
-// вернуть квоты оружия ботам
-TB.DuelRestoreCv <- function(d) {
-	if (d == null || !("cv" in d)) return
+// вернуть квоты оружия ботам (d не нужен — исходные значения общие)
+TB.cvOrig <- null
+TB.DuelRestoreCv <- function(d = null) {
+	if (TB.cvOrig == null) return
 	local cmd = ""
-	foreach (cv, v in d.cv) cmd += cv + " " + v + ";"
-	delete d.cv
+	foreach (cv, v in TB.cvOrig) cmd += cv + " " + v + ";"
+	TB.cvOrig = null
+	TB.SrvCmd(cmd)
+	try { StringToFile(TB.DUEL_FILE, "") } catch (e) {}
+}
+// аварийно: всем ботам снова все стволы (!tb duel, «чё вы все на ножах»)
+TB.AllWeapons <- function() {
+	TB.cvOrig = null
+	local cmd = ""
+	foreach (cat, cv in TB.CAT_CV) cmd += cv + " 1;"
 	TB.SrvCmd(cmd)
 	try { StringToFile(TB.DUEL_FILE, "") } catch (e) {}
 }
@@ -389,10 +433,9 @@ TB.DuelPostpone <- function() {
 // поменять оружие / правила уже договорённой дуэли
 TB.DuelReplace <- function(spec) {
 	local d = TB.duel, was = d.active
-	if (was) TB.DuelRestoreCv(d)
 	d.ids = spec.ids; d.give = spec.give; d.disp = spec.disp; d.cats = spec.cats; d.bomb = spec.bomb
-	if ("nades" in spec) d.nades <- true; else if ("nades" in d) delete d.nades
-	if (was) TB.DuelActivate()
+	foreach (k in ["nades", "free", "foe"]) { if (k in spec) d[k] <- spec[k]; else if (k in d) delete d[k] }
+	if (was) TB.DuelActivate()   // новые квоты поверх, исходные (TB.cvOrig) не трогаем
 }
 TB.DUEL_FILE <- "toxicbots_duel.txt"
 TB.duelChecked <- false
@@ -402,6 +445,8 @@ TB.DuelRecover <- function() {
 	local s = null
 	try { s = FileToString(TB.DUEL_FILE) } catch (e) {}
 	if (s == null || s.len() < 5 || s.find("bot_allow") != 0) return
+	// старые версии мода могли записать сюда нули — тогда просто разрешаем всё
+	if (s.find(" 1;") == null) { TB.AllWeapons(); printl("[ToxicBots] вернул ботам все стволы"); return }
 	TB.SrvCmd(s)
 	try { StringToFile(TB.DUEL_FILE, "") } catch (e) {}
 	printl("[ToxicBots] восстановил квоты оружия ботов после прошлой дуэли")
@@ -415,6 +460,7 @@ TB.DuelBots <- function() {
 // отобрать лишнее, выдать разрешённое, вернуть деньги
 TB.DuelEnforce <- function(now = false) {
 	local d = TB.duel, t = Time()
+	if ("free" in d) return
 	foreach (b in TB.DuelBots()) {
 		if (!TB.Alive(b)) continue
 		local has = false
@@ -447,9 +493,12 @@ TB.SnapMoney <- function() {
 TB.StartDuel <- function(spec, bot, human, evNow, evNext, forceNext = false) {
 	TB.duel = { ids = spec.ids, give = spec.give, disp = spec.disp, cats = spec.cats, bomb = spec.bomb,
 		active = false, round = -1, arm = 0.0, armBot = bot.entindex() }
-	if ("nades" in spec) TB.duel.nades <- true
+	foreach (k in ["nades", "free", "foe"]) if (k in spec) TB.duel[k] <- spec[k]
+	TB.offerNextRound = TB.Max(TB.offerNextRound, TB.roundNo + 4)
 	local ctx = TB.DuelCtx(TB.Ctx(human, bot))
 	local inWin = Time() - TB.roundStartT < TB_CFG.duel_start_window
+	// мёртвый бот «сейчас» не согласится — со следующего раунда
+	if (!forceNext && !TB.Alive(bot)) { forceNext = true; evNext = "duel_accept_dead" }
 	if (!forceNext && inWin && TB.HasDuelW(human, TB.duel)) {
 		TB.DuelActivate()
 		TB.BotSay(bot, TB.DEv(evNow, bot, ctx), false)
@@ -473,9 +522,9 @@ TB.DuelArmTick <- function(now) {
 }
 
 TB.OnDuel <- function(human, a, rude, polite) {
-	local spec = TB.DuelSpec(a)
-	local bot = TB.PickBot(a, human, false)
+	local bot = TB.AliveFoe(a, human)
 	if (bot == null) return
+	local spec = TB.IsOneVOne(TB.Words(a)) ? TB.OneVOneSpec(bot, a) : TB.DuelSpec(a)
 	local ctx = TB.Ctx(human, bot)
 	ctx.duel <- spec.disp
 	TB.DuelCtx(ctx)
@@ -484,7 +533,9 @@ TB.OnDuel <- function(human, a, rude, polite) {
 	ctx.rules = (r != null) ? TB.RulesText(r) : "всё по-честному"
 	TB.Talked(bot)
 	if (TB.duel != null) { ctx.duel = TB.duel.disp; TB.BotSay(bot, TBC.EventLine("duel_already", null, ctx), false); return }
-	if (TB.dirty > 0 && TBC.Rnd() < 0.55 + 0.15 * TB.dirty) { TB.BotSay(bot, TBC.EventLine("duel_refuse_dirty", null, ctx), false); return }
+	// кидал на дуэли недавно (2 раунда) — чаще отказывают; потом почти забывают
+	local fresh = TB.roundNo - TB.dirtyRound <= 2
+	if (TB.dirty > 0 && TBC.Rnd() < (fresh ? 0.4 + 0.1 * TB.dirty : 0.12)) { TB.BotSay(bot, TBC.EventLine("duel_refuse_dirty", null, ctx), false); return }
 	if ((rude && TBC.Rnd() < 0.45) || (TB.resp < 25 && TBC.Rnd() < 0.4)) { TB.BotSay(bot, TBC.EventLine("duel_refuse", null, ctx), false); return }
 	TB.offer = null
 	TB.StartDuel(spec, bot, human, "duel_accept", "duel_accept_next")
@@ -493,7 +544,7 @@ TB.OnDuel <- function(human, a, rude, polite) {
 
 // бот сам предлагает дуэль в начале раунда
 TB.MaybeOffer <- function() {
-	if (TB.duel != null || TB.offer != null || TB.roundNo < 2 || TBC.Rnd() > TB_CFG.duel_offer_chance) return
+	if (TB.duel != null || TB.offer != null || TB.roundNo < 2 || TB.roundNo < TB.offerNextRound || TBC.Rnd() > TB_CFG.duel_offer_chance) return
 	local h = TB.Human()
 	if (h == null || h.GetTeam() < 2) return
 	local foes = TB.Bots(h.GetTeam() == 2 ? 3 : 2)
@@ -508,6 +559,7 @@ TB.MaybeOffer <- function() {
 	// предложение действует только после того, как появилось в чате (и если вообще влезло)
 	if (!TB.BotSay(b, TBC.EventLine("duel_offer", null, ctx), false, 2.5)) return
 	local shown = TB.botNext[b.entindex()] - 0.5
+	TB.offerNextRound = TB.roundNo + 3
 	TB.offer = { spec = spec, bot = b.entindex(), from = shown, until = shown + 45.0 }
 }
 TB.YES <- {}

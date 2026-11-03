@@ -273,6 +273,7 @@ TBC.Analyze <- function(text) {
 	res.word <- (res.cap >= 0) ? res.raws[res.cap] : ""
 	res.explain <- false
 	res.mat <- false
+	res.q <- text.find("?") != null   // вопрос: без темы отвечаем на него, а не «ну да»
 	foreach (t in res.toks) {
 		foreach (e in TBC.EXPL) if (TBC.Starts(t, e, 0)) res.explain = true
 		foreach (m in TBC.MAT) if (TBC.PartScore(t, 2, m) > 0) res.mat = true
@@ -503,7 +504,7 @@ TBC.Reply <- function(a, side, ctx, nice = false) {
 	ctx.word <- (a.word != "") ? a.word : "ты"
 	if (nice) {
 		local pool = (a.intent != null) ? TBC.NicePool(a.intent, side) : []
-		if (pool.len() == 0) pool = TB_DATA.events.nice_fallback.all
+		if (pool.len() == 0) pool = (a.q && a.intent == null) ? TB_DATA.events.nice_fallback_q.all : TB_DATA.events.nice_fallback.all
 		return [TBC.Tidy(TBC.Expand(TBC.Pick(pool), ctx)), "nice " + (a.intent != null ? a.intent.name : "-")]
 	}
 	local cl = TBC.BestClassic(a.toks)
@@ -513,7 +514,8 @@ TBC.Reply <- function(a, side, ctx, nice = false) {
 	if (a.intent != null) {
 		if (a.explain && TBC.Rnd() < 0.6) { pool = TB_DATA.events.explain.all; why = "explain" }
 		else { pool = TBC.PickPool(a.intent, side); why = a.intent.name }
-	} else { pool = TB_DATA.events.fallback.all; why = "fallback" }
+	} else if (a.q) { pool = TB_DATA.events.fallback_q.all; why = "fallback_q" }
+	else { pool = TB_DATA.events.fallback.all; why = "fallback" }
 	local core = TBC.Tidy(TBC.Expand(TBC.Pick(pool), ctx))
 	return [TBC.Decorate(core, a, ctx), why]
 }
