@@ -551,7 +551,7 @@ TBC.RudeWord <- function(a) {
 		if (!(n in TBC.IDX)) continue
 		foreach (key in TB_DATA.intents[TBC.IDX[n]].keys) {
 			local r = TBC.KeyMatch(a.toks, key)
-			if (r[0] >= 0.95 || (r[0] > 0 && key[2][0][1].len() >= 5)) return a.raws[r[2]]
+			if (r[0] >= 0.95 || (r[0] > 0 && key[2][0][1].len() >= 6)) return a.raws[r[2]]
 		}
 	}
 	return null

@@ -59,7 +59,11 @@ TB.St <- function(uid) {
 	return TB.stats[uid]
 }
 TB.ResetRound <- function() { foreach (s in TB.stats) { s.rk = 0; s.rd = 0; s.rdmg = 0 } TB.roundDeath = false }
-TB.ResetMatch <- function() { TB.stats = {}; TB.matchOver = false; TB.sandbag = null; TB.resp = TB_CFG.start_respect }
+TB.ResetMatch <- function() {
+	TB.stats = {}; TB.matchOver = false; TB.sandbag = null; TB.resp = TB_CFG.start_respect
+	if ("worstRow" in TB) { TB.worstRow = {}; TB.roundNo = 0; TB.kickNextRound = 0; TB.offer = null }
+	if (("duel" in TB) && TB.duel != null) TB.DuelStop()
+}
 TB.NoteUid <- function(userid) {
 	local p = GetPlayerFromUserID(userid)
 	if (p != null) TB.uid[p.entindex()] <- userid
@@ -93,6 +97,8 @@ TB.Ctx <- function(human, bot) {
 	ctx.ck <- (TB.sandbag != null) ? TB.sandbag.ck : 0
 	ctx.cd <- (TB.sandbag != null) ? TB.sandbag.cd : 0
 	ctx.cmd <- "иду"; ctx.site <- "плент"
+	ctx.tkd <- ctx.bkd; ctx.duel <- "на ножах"; ctx.dirtyw <- "со стволом"
+	ctx.cmdwhere <- "идти туда"; ctx.wname <- "ствол"; ctx.have <- "ствол"
 	return ctx
 }
 
@@ -207,13 +213,15 @@ TB.Push <- function(item) {
 TB.Later <- function(delay, fn) { TB.Push({ t = Time() + delay, f = fn }) }
 
 // бот "печатает" (задержка по длине) и отправляет
-TB.BotSay <- function(bot, text, teamOnly, extra = 0.0) {
+TB.BotSay <- function(bot, text, teamOnly, extra = 0.0, raw = false) {
 	if (bot == null || text == null || text == "") return
 	local snd = ""
 	if (text[0] == 2) {
 		local e = text.find("\x02", 1)
 		if (e != null) { snd = text.slice(1, e); text = text.slice(e + 1) }
 	}
+	local more = []
+	if (!raw && snd == "") { local hz = TB.Humanize(text); text = hz[0]; more = hz[1] }
 	local idx = bot.entindex(), now = Time()
 	local typing = 0.6 + (text.len() / 2.0) / TB_CFG.typing_speed
 	if (typing > 4.5) typing = 4.5
@@ -229,6 +237,8 @@ TB.BotSay <- function(bot, text, teamOnly, extra = 0.0) {
 		}
 	} })
 	if (TB_CFG.debug) printl("[ToxicBots] " + TB.Name(bot) + (teamOnly ? " (team)" : "") + ": " + text)
+	// вторая часть / исправление опечатки — отдельным сообщением следом
+	foreach (x in more) if (x != "") TB.BotSay(bot, x, teamOnly, 0.0, true)
 }
 
 // ------------------------------------------------------------ think
@@ -248,6 +258,9 @@ TB.Tick <- function() {
 	// просыпаемся только когда есть дело: ближайшее сообщение или проверка голоса
 	local next = TB_CFG.voice_enabled ? TB.nextVoice : now + 2.0
 	foreach (q in TB.queue) if (q.t < next) next = q.t
+	local ft = null
+	try { ft = TB.FunTick(now) } catch (e) { printl("[ToxicBots] ошибка: " + e) }
+	if (ft != null && now + ft < next) next = now + ft
 	local dt = TB.Clamp(next - now, 0.1, 2.0)
 	TB.thinkAt = now + dt
 	return dt
@@ -319,6 +332,7 @@ TB.OnHumanSay <- function(human, text) {
 	local name = (a.intent != null) ? a.intent.name : ""
 	if (TB_CFG.debug) printl("[ToxicBots] \"" + text + "\" -> " + name + " (" + a.score + ") хамство=" + rude + " вежливо=" + polite + " уважение=" + TB.resp)
 
+	if (TB.FunSay(human, a, text, rude, polite, name)) return
 	if (name in TB.CMDS) { TB.OnCommand(human, a, name, rude, polite); return }
 	if (name == "team_up") { TB.OnTeamUp(human, a, rude, polite); return }
 	if (name == "kd_taunt") { TB.OnKdTaunt(human, a, rude, polite); return }
@@ -334,6 +348,7 @@ TB.OnHumanSay <- function(human, text) {
 	if (TB_CFG.debug) printl("[ToxicBots]   " + TB.Name(bot) + " -> " + r[1] + " слово=" + a.word)
 	TB.BotSay(bot, r[0], false)
 	TB.Talked(bot)
+	TB.FunAfterReply(human, bot, a, rude, toxic)
 
 	// второй бот подтявкивает
 	local all = TB.Bots()
@@ -356,7 +371,8 @@ TB.CMDS <- {
 	cmd_backup = { slot = 18, snd = "Radio.NeedBackup",    say = "Нужна помощь!",       cmd = "бегу к тебе" },
 	cmd_defuse = { slot = 18, snd = "Radio.NeedBackup",    say = "Нужна помощь!",       cmd = "иду дефузить" },
 	cmd_clear  = { slot = 19, snd = "Radio.SectorClear",   say = "Сектор чист.",        cmd = "понял, тут чисто" },
-	cmd_site   = { slot = 11, snd = "Radio.StickTogether", say = "Держимся вместе!",    cmd = "иду с тобой" }
+	cmd_site   = { slot = 11, snd = "Radio.StickTogether", say = "Держимся вместе!",    cmd = "иду с тобой" },
+	cmd_defend = { slot = 4,  snd = "Radio.HoldPosition",  say = "Охраняйте бомбу!",    cmd = "держу позицию" }
 }
 TB.STICK <- { slot = 11, snd = "Radio.StickTogether", say = "Держимся вместе!" }
 
@@ -411,6 +427,19 @@ TB.OnCommand <- function(human, a, name, rude, polite) {
 	ctx.site = (site != "") ? site : "плент"
 	ctx.cmd = c.cmd + ((site != "" && (name == "cmd_follow" || name == "cmd_site" || name == "cmd_go" || name == "cmd_backup")) ? " на " + site : "")
 
+	// «дефайте/охраняйте бомбу»: Т — сторожить заложенную бомбу, КТ — держать точку
+	local okEv = null
+	if (name == "cmd_defend") {
+		local planted = TB.BombPlanted()
+		if (ht == 3 && planted) { name = "cmd_defuse"; c = TB.CMDS.cmd_defuse; ctx.cmd = c.cmd }
+		else if (ht == 2 && planted) okEv = "defend_planted"
+		else if (ht == 2) { c = TB.CMDS.cmd_cover; okEv = "defend_not_planted" }
+		else okEv = "defend_ct"
+	}
+	local where = (name in TB.CMD_WHERE) ? TB.CMD_WHERE[name] : "идти туда"
+	if (site != "" && (name == "cmd_follow" || name == "cmd_site" || name == "cmd_go")) where = (name == "cmd_site") ? "идти на " + site : where + " на " + site
+	TB.lastCmd = { t = Time(), obeyed = false, where = where }
+
 	if (name == "cmd_defuse") {
 		if (ht == 2) { TB.BotSay(bot, TBC.EventLine("cmd_wrong_team", null, ctx), true); TB.Talked(bot); return }
 		if (!TB.BombPlanted()) { TB.BotSay(bot, TBC.EventLine("cmd_no_bomb", null, ctx), true); TB.Talked(bot); return }
@@ -419,8 +448,9 @@ TB.OnCommand <- function(human, a, name, rude, polite) {
 
 	if (TBC.Rnd() < TB.ObeyChance(rude, polite)) {
 		TB.Radio(human, c)
+		TB.lastCmd.obeyed = true
 		local toxic = TB.IsToxic(bot, rude, polite, a.mat)
-		TB.BotSay(bot, TBC.EventLine(toxic ? "cmd_ok" : "cmd_ok_nice", null, ctx), true)
+		TB.BotSay(bot, (okEv != null) ? TB.Ev(okEv, bot, ctx, null, toxic) : TBC.EventLine(toxic ? "cmd_ok" : "cmd_ok_nice", null, ctx), true)
 		if (mates.len() > 1 && TBC.Rnd() < 0.35) {
 			local o = TBC.Pick(mates)
 			if (o.entindex() != bot.entindex()) TB.BotSay(o, TBC.EventLine("cmd_pile", null, TB.Ctx(human, o)), true, 1.0)
@@ -471,6 +501,7 @@ TB.OnKdTaunt <- function(human, a, rude, polite) {
 	local toxic = TB.IsToxic(bot, rude, polite, a.mat)
 	TB.BotSay(bot, TB.Ev(ahead ? "kd_ahead" : "kd_behind", bot, ctx, null, toxic), false)
 	TB.Talked(bot)
+	if (!ahead) { TB.FunAfterReply(human, bot, a, rude, toxic); return }
 	// кто-то из своих впрягается
 	if (toxic && TBC.Rnd() < TB_CFG.pile_chance) {
 		local same = TB.Bots(bot.GetTeam())
@@ -537,8 +568,9 @@ TB.Command <- function(human, text) {
 		TB.temper = {}
 		ClientPrint(human, 3, "\x04[ToxicBots]\x01 токсичность = " + TB_CFG.toxicity)
 	}
+	else if (arg == "duel") { if (TB.duel != null) TB.DuelStop(); TB.offer = null; ClientPrint(human, 3, "\x04[ToxicBots]\x01 дуэль отменена, боты снова с оружием") }
 	else if (arg == "mood") ClientPrint(human, 3, "\x04[ToxicBots]\x01 уважение ботов к тебе: " + TB.resp.tointeger() + "/100, токсичность: " + TB_CFG.toxicity)
-	else ClientPrint(human, 3, "\x04[ToxicBots]\x01 !tb on | off | stat | mood | toxic 0.3 | debug")
+	else ClientPrint(human, 3, "\x04[ToxicBots]\x01 !tb on | off | stat | mood | toxic 0.3 | duel (отменить дуэль) | debug")
 }
 
 // ------------------------------------------------------------ голос (voice/ГОЛОС.bat пишет сюда)
@@ -642,8 +674,11 @@ TB.AfterRound <- function(winner) {
 		local ctx = TB.WorstCtx(TB.Ctx(human, sp), worst, true)
 		TB.BotSay(sp, TB.Ev("worst_round", sp, ctx), false, delay + 1.5)
 		if (TB.IsBot(worst)) {
-			if (TBC.Rnd() < TB_CFG.worst_reply_chance)
-				TB.BotSay(worst, TB.Ev("worst_reply", worst, TB.Ctx(human, worst)), false, delay + 4.0)
+			if (TBC.Rnd() < TB_CFG.worst_reply_chance) {
+				// огрызается конкретно тому, кто его обосрал
+				if (TBC.Rnd() < 0.5) TB.BotSay(worst, TBC.EventLine("worst_snap", null, TB.CtxTo(human, worst, sp)), false, delay + 4.0)
+				else TB.BotSay(worst, TB.Ev("worst_reply", worst, TB.Ctx(human, worst)), false, delay + 4.0)
+			}
 		} else if (TBC.Rnd() < 0.5) {
 			local b2 = TBC.Pick(lbots)
 			if (b2.entindex() != sp.entindex()) TB.BotSay(b2, TB.Ev("worst_human", b2, TB.WorstCtx(TB.Ctx(worst, b2), worst, true)), false, delay + 4.0)
@@ -730,15 +765,16 @@ TB_Events.OnGameEvent_player_death <- function(params) {
 			if (TB.IsBot(a) && !TB.IsBot(v)) {
 				as.killedMe++
 				TB.lastBot = a.entindex(); TB.lastBotTime = Time()
-				if (TBC.Rnd() < TB_CFG.kill_taunt_chance)
+				if (!TB.DuelOn() && TBC.Rnd() < TB_CFG.kill_taunt_chance)
 					TB.BotSay(a, TB.Ev(hs && TBC.Rnd() < 0.6 ? "kill_human_hs" : "kill_human", a, TB.Ctx(v, a)), false)
 			} else if (!TB.IsBot(a) && TB.IsBot(v)) {
 				TB.lastBot = v.entindex(); TB.lastBotTime = Time()
-				if (TBC.Rnd() < TB_CFG.death_whine_chance)
+				if (!TB.DuelOn() && TBC.Rnd() < TB_CFG.death_whine_chance)
 					TB.BotSay(v, TB.Ev("killed_by_human", v, TB.Ctx(a, v)), false)
 			}
 		}
 	}
+	try { TB.FunDeath(v, a, params) } catch (e) { printl("[ToxicBots] ошибка: " + e) }
 	if (first && !TB.IsBot(v) && TBC.Rnd() < TB_CFG.first_death_chance) {
 		local mates = TB.Bots(v.GetTeam())
 		if (mates.len() > 0) { local b = TBC.Pick(mates); TB.BotSay(b, TB.Ev("human_first_death", b, TB.Ctx(v, b)), true, 0.8) }
@@ -757,7 +793,9 @@ TB_Events.OnGameEvent_round_start <- function(params) {
 			local b = TBC.Pick(bots)
 			TB.BotSay(b, TB.Ev("map_start", b, TB.Ctx(h, b)), false, 2.0)
 		}
+		TB.FunMapStart(h)
 	}
+	if (TB_CFG.enabled) try { TB.FunRoundStart() } catch (e) { printl("[ToxicBots] ошибка: " + e) }
 }
 
 TB_Events.OnGameEvent_round_end <- function(params) {
@@ -767,6 +805,7 @@ TB_Events.OnGameEvent_round_end <- function(params) {
 	local w = ("winner" in params) ? params.winner : 0
 	if (!TB_CFG.enabled || (w != 2 && w != 3)) return
 	TB.Later(0.6, function() { TB.AfterRound(w) })   // счёт команд обновится
+	TB.Later(7.0, function() { TB.FunAfterRound(w) })
 }
 
 TB_Events.OnGameEvent_cs_win_panel_match <- function(params) {
@@ -776,6 +815,9 @@ TB_Events.OnGameEvent_cs_win_panel_match <- function(params) {
 }
 
 TB_Events.OnGameEvent_player_spawn <- function(params) { TB.EnsureThink(); TB.NoteUid(params.userid) }
+
+IncludeScript("toxicbots/fun_items")
+IncludeScript("toxicbots/fun_social")
 
 try { TB.PrecacheClips() } catch (e) { printl("[ToxicBots] клипы: " + e) }
 __CollectGameEventCallbacks(TB_Events)

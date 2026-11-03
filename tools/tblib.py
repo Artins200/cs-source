@@ -238,6 +238,12 @@ def load_file(d, fn):
                                'nice': [], 'nice_team': [], 'nice_enemy': [],
                                'short': 0, 'prio': 0, 'rawkeys': []}
                         d.intents.append(cur)
+                    elif kind == 'more':
+                        # @more имя — ещё токсичных ответов для уже объявленного интента
+                        cur = [x for x in d.intents if x['name'] == head[1]]
+                        if not cur:
+                            raise ValueError('@more: нет интента ' + head[1])
+                        cur = cur[0]
                     elif kind == 'nice':
                         # @nice имя — дружелюбные ответы для уже объявленного интента
                         cur = [x for x in d.intents if x['name'] == head[1]]
@@ -257,14 +263,14 @@ def load_file(d, fn):
                 elif kind == 'classic':
                     a, b = s.split('=>', 1)
                     cur.append([a.strip(), b.strip()])
-                elif kind in ('intent', 'event', 'nice'):
+                elif kind in ('intent', 'event', 'nice', 'more'):
                     if s.startswith('>'):
                         section = s[1:].strip()
                         if kind == 'nice':
                             section = 'nice' if section == 'all' else 'nice_' + section
                         assert section in ('all', 'team', 'enemy', 'nice', 'nice_team', 'nice_enemy'), section
                         continue
-                    if kind == 'intent' and re.match(r'^(keys|weight|short|prio):', s):
+                    if kind in ('intent', 'more') and re.match(r'^(keys|weight|short|prio):', s):
                         k, v = s.split(':', 1)
                         if k == 'keys':
                             cur['rawkeys'] += v.split()
