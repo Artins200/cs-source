@@ -26,6 +26,7 @@ ToxicBots для Counter-Strike: Source
    Если кик не работает: в консоли sv_allow_point_servercommand always
 9) Боты срутся между собой, один бот — тролль, обвиняют в читах за 3 хедшота подряд,
    помнят, куда ты их звал ("ты сам сказал идти за тобой, а теперь мы нубы?").
+   Отвечают друг другу с паузой (читают -> печатают). Темп: config.nut -> typing_speed, read_speed, chat_gap.
 
 Команды в чате: !tb on | !tb off | !tb stat | !tb mood | !tb toxic 0.3 | !tb duel | !tb debug
 Настройки (шансы, скорость ответов): scripts\vscripts\toxicbots\config.nut

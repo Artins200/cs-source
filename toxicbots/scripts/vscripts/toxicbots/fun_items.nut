@@ -355,7 +355,7 @@ TB.MaybeOffer <- function() {
 	local r = TBC.Rnd(), spec
 	local fake = { toks = [TBC.Decode(r < 0.6 ? "нож" : (r < 0.8 ? "дигл" : (r < 0.9 ? "авп" : "скаут")))] }
 	spec = TB.DuelSpec(fake)
-	TB.offer = { spec = spec, bot = b.entindex(), until = Time() + 25.0 }
+	TB.offer = { spec = spec, bot = b.entindex(), until = Time() + 45.0 }
 	local ctx = TB.Ctx(h, b)
 	ctx.duel <- spec.disp
 	TB.BotSay(b, TBC.EventLine("duel_offer", null, ctx), false, 2.5)

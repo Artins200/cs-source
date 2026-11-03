@@ -361,7 +361,7 @@ TB.FunAfterRound <- function(winner) {
 				local v = TB.OtherBot(cand, sp)
 				if (v != null) TB.BotSay(v, TBC.EventLine(TBC.Rnd() < 0.6 ? "kick_vote_yes" : "kick_vote_no", null, TB.Ctx(human, v)), false, delay + 3.0)
 				TB.BotSay(cand, TBC.EventLine("kick_protest", null, TB.CtxTo(human, cand, sp)), false, delay + 4.5)
-				TB.kickVote = { idx = cand.entindex(), until = Time() + 25.0 }
+				TB.kickVote = { idx = cand.entindex(), until = Time() + 45.0 }
 				return
 			}
 		}

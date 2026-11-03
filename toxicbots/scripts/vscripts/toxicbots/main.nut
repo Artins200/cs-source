@@ -203,6 +203,8 @@ TB.Tts <- function(bot, text) {
 
 // think спит, пока нет дел; если появилось дело раньше — будим
 TB.thinkAt <- 0.0
+TB.chat <- []      // запланированные сообщения ботов { t, len, bot } — общая очередь чата
+TB.prio <- false   // следующее сообщение — прямой ответ на твоё (идёт без очереди)
 TB.Push <- function(item) {
 	TB.queue.push(item)
 	if (TB.thinker != null && TB.thinker.IsValid() && item.t < TB.thinkAt - 0.05) {
@@ -213,7 +215,7 @@ TB.Push <- function(item) {
 TB.Later <- function(delay, fn) { TB.Push({ t = Time() + delay, f = fn }) }
 
 // бот "печатает" (задержка по длине) и отправляет
-TB.BotSay <- function(bot, text, teamOnly, extra = 0.0, raw = false) {
+TB.BotSay <- function(bot, text, teamOnly, extra = 0.0, raw = false, after = null) {
 	if (bot == null || text == null || text == "") return
 	local snd = ""
 	if (text[0] == 2) {
@@ -223,10 +225,43 @@ TB.BotSay <- function(bot, text, teamOnly, extra = 0.0, raw = false) {
 	local more = []
 	if (!raw && snd == "") { local hz = TB.Humanize(text); text = hz[0]; more = hz[1] }
 	local idx = bot.entindex(), now = Time()
-	local typing = 0.6 + (text.len() / 2.0) / TB_CFG.typing_speed
-	if (typing > 4.5) typing = 4.5
+	local chars = text.len() / 2.0   // кириллица — 2 байта на букву
+	local typing = 0.6 + chars / TB_CFG.typing_speed
+	if (typing > TB_CFG.typing_max) typing = TB_CFG.typing_max
 	local t = now + extra + typing + RandomFloat(0.0, 0.6)
 	if ((idx in TB.botNext) && TB.botNext[idx] > t) t = TB.botNext[idx] + 0.8
+	// --- общая очередь чата: сообщения разных ботов не вываливаются пачкой
+	local keep = []
+	foreach (c in TB.chat) if (c.t > now - 15.0) keep.push(c)
+	TB.chat = keep
+	local prio = !raw && TB.prio
+	if (prio) TB.prio = false
+	if (after != null) {
+		// продолжение того же бота: «*исправление» или вторая часть сообщения
+		t = after + ((text[0] == '*') ? RandomFloat(0.9, 1.6) : 0.4 + typing * 0.7)
+	} else if (prio) {
+		// прямой ответ тебе — в первое свободное окно, не дожидаясь болтовни ботов
+		local gap = TB_CFG.chat_gap + 1.3, moved = true
+		for (local n = 0; moved && n < 50; n++) {
+			moved = false
+			foreach (c in TB.chat) if ((c.t > t ? c.t - t : t - c.t) < gap) { t = c.t + gap + 0.05; moved = true }
+		}
+	} else {
+		// остальные сначала «читают» последнее сообщение, потом печатают своё
+		local last = null
+		foreach (c in TB.chat) if (last == null || c.t > last.t) last = c
+		if (last != null) {
+			local tt = last.t + TB_CFG.chat_gap + last.len / TB_CFG.read_speed
+				+ typing * ((last.bot == idx) ? 0.3 : 0.5) + RandomFloat(0.0, 0.8)
+			if (t < tt) t = tt
+		}
+	}
+	// очередь слишком длинная — устаревшую реплику просто не говорим
+	if (!raw && !prio && t - now > TB_CFG.chat_max_delay) {
+		if (TB_CFG.debug) printl("[ToxicBots] (пропущено, очередь) " + text)
+		return
+	}
+	TB.chat.push({ t = t, len = chars, bot = idx })
 	TB.botNext[idx] <- t + 0.5
 	TB.Push({ t = t, f = function() {
 		local b = PlayerInstanceFromIndex(idx)
@@ -238,7 +273,8 @@ TB.BotSay <- function(bot, text, teamOnly, extra = 0.0, raw = false) {
 	} })
 	if (TB_CFG.debug) printl("[ToxicBots] " + TB.Name(bot) + (teamOnly ? " (team)" : "") + ": " + text)
 	// вторая часть / исправление опечатки — отдельным сообщением следом
-	foreach (x in more) if (x != "") TB.BotSay(bot, x, teamOnly, 0.0, true)
+	local prev = t
+	foreach (x in more) if (x != "") { TB.BotSay(bot, x, teamOnly, 0.0, true, prev); prev = TB.botNext[idx] - 0.5 }
 }
 
 // ------------------------------------------------------------ think
@@ -325,6 +361,7 @@ TB.OnHumanSay <- function(human, text) {
 	if (!TB_CFG.enabled) return
 	if (TB.Bots().len() == 0) return
 	local a = TBC.Analyze(text)
+	TB.prio = true
 	local rudeWord = TBC.RudeWord(a), polite = TBC.IsPolite(a.toks)
 	local rude = rudeWord != null
 	a.rudeWord <- (rudeWord != null) ? rudeWord : ""
@@ -601,6 +638,7 @@ TB.PollVoice <- function() {
 		if (host == null) continue
 		if (TB_CFG.voice_echo) ClientPrint(host, 3, "\x07AAAAAA[голос] " + TB.Clean(text))
 		TB.OnHumanSay(host, text)
+		TB.prio = false
 	}
 	TB.voiceInit = true
 }
@@ -730,6 +768,7 @@ TB_Events.OnGameEvent_player_say <- function(params) {
 	local text = params.text
 	if (text.len() >= 3 && text.slice(0, 3) == "!tb") { TB.Command(p, text); return }
 	TB.OnHumanSay(p, text)
+	TB.prio = false
 }
 
 TB_Events.OnGameEvent_player_hurt <- function(params) {
