@@ -23,7 +23,7 @@ def make_ctx(data, k=3, d=11):
            'map': 'de_dust2', 'weapon': 'AK-47', 'num': 4, 'target': 'Игрок', 'worst': 'Игрок',
            'wk': 0, 'wd': 1, 'wdmg': 27, 'best': 'Bot Petya', 'score': '3:9', 'round': 12,
            'bk': 7, 'bd': 4, 'bkd': '7-4', 'rk': 3, 'ck': 1, 'cd': 9, 'cmd': 'иду за тобой на Б', 'site': 'Б',
-           'tkd': '2-9', 'duel': 'на ножах', 'dirtyw': 'с AWP', 'cmdwhere': 'идти на Б', 'wname': 'калаш', 'have': 'калаш'}
+           'tkd': '2-9', 'duel': 'на ножах', 'dirtyw': 'с AWP', 'cmdwhere': 'идти на Б', 'wname': 'калаш', 'have': 'калаш', 'rules': 'бомбу ставить можно'}
     g = Gen(data)
     ctx['perf'] = g.expand('{perf_bad}' if k <= d else '{perf_good}', ctx)
     return ctx

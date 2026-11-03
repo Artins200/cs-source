@@ -58,7 +58,7 @@ TB.St <- function(uid) {
 		TB.stats[uid] <- { k = 0, d = 0, dmg = 0, hs = 0, tk = 0, rk = 0, rd = 0, rdmg = 0, killedMe = 0, name = "" }
 	return TB.stats[uid]
 }
-TB.ResetRound <- function() { foreach (s in TB.stats) { s.rk = 0; s.rd = 0; s.rdmg = 0 } TB.roundDeath = false }
+TB.ResetRound <- function() { foreach (s in TB.stats) { s.rk = 0; s.rd = 0; s.rdmg = 0 } TB.roundDeath = false; TB.bombPlanted = false }
 TB.ResetMatch <- function() {
 	TB.stats = {}; TB.matchOver = false; TB.sandbag = null; TB.resp = TB_CFG.start_respect
 	if ("worstRow" in TB) { TB.worstRow = {}; TB.roundNo = 0; TB.kickNextRound = 0; TB.offer = null }
@@ -98,7 +98,7 @@ TB.Ctx <- function(human, bot) {
 	ctx.cd <- (TB.sandbag != null) ? TB.sandbag.cd : 0
 	ctx.cmd <- "иду"; ctx.site <- "плент"
 	ctx.tkd <- ctx.bkd; ctx.duel <- "на ножах"; ctx.dirtyw <- "со стволом"
-	ctx.cmdwhere <- "идти туда"; ctx.wname <- "ствол"; ctx.have <- "ствол"
+	ctx.cmdwhere <- "идти туда"; ctx.wname <- "ствол"; ctx.have <- "ствол"; ctx.rules <- "всё по-честному"
 	return ctx
 }
 
@@ -136,7 +136,28 @@ TB.Clean <- function(s) {
 		out += c.tochar()
 	}
 	while (out.len() > 0 && out[0] == '#') out = out.slice(1)
-	return out
+	return TB.FixPlural(out)
+}
+// «3 килов» -> «3 кила», «1 смертей» -> «1 смерть»
+TB.PLURALS <- [[" килов", " кил", " кила"], [" киллов", " килл", " килла"], [" смертей", " смерть", " смерти"], [" фрагов", " фраг", " фрага"]]
+TB.FixPlural <- function(s) {
+	foreach (w in TB.PLURALS) {
+		local from = 0
+		for (local guard = 0; guard < 8; guard++) {
+			local p = s.find(w[0], from)
+			if (p == null) break
+			from = p + w[0].len()
+			local b = p
+			while (b > 0 && s[b - 1] >= '0' && s[b - 1] <= '9') b--
+			if (b == p || p - b > 6) continue
+			local n = s.slice(b, p).tointeger(), m10 = n % 10, m100 = n % 100
+			local rep = w[0]
+			if (m10 == 1 && m100 != 11) rep = w[1]
+			else if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) rep = w[2]
+			if (rep != w[0]) { s = s.slice(0, p) + rep + s.slice(p + w[0].len()); from = p + rep.len() }
+		}
+	}
+	return s
 }
 
 // режем длинные сообщения по пробелам (лимит пакета чата ~250 байт)
@@ -213,10 +234,19 @@ TB.Push <- function(item) {
 	}
 }
 TB.Later <- function(delay, fn) { TB.Push({ t = Time() + delay, f = fn }) }
+// метка для группы реплик (TB.tag = "dirty" ... TB.tag = null), чтобы потом отменить несказанное
+TB.tag <- null
+TB.CancelTag <- function(tag) {
+	local q = [], c = []
+	foreach (x in TB.queue) if (!("tag" in x) || x.tag != tag) q.push(x)
+	foreach (x in TB.chat) if (!("tag" in x) || x.tag != tag) c.push(x)
+	TB.queue = q; TB.chat = c
+}
 
 // бот "печатает" (задержка по длине) и отправляет
+// -> true, если сообщение поставлено в очередь (false — пропущено)
 TB.BotSay <- function(bot, text, teamOnly, extra = 0.0, raw = false, after = null) {
-	if (bot == null || text == null || text == "") return
+	if (bot == null || text == null || text == "") return false
 	local snd = ""
 	if (text[0] == 2) {
 		local e = text.find("\x02", 1)
@@ -259,13 +289,16 @@ TB.BotSay <- function(bot, text, teamOnly, extra = 0.0, raw = false, after = nul
 	// очередь слишком длинная — устаревшую реплику просто не говорим
 	if (!raw && !prio && t - now > TB_CFG.chat_max_delay) {
 		if (TB_CFG.debug) printl("[ToxicBots] (пропущено, очередь) " + text)
-		return
+		return false
 	}
-	TB.chat.push({ t = t, len = chars, bot = idx })
+	local tag = TB.tag
+	TB.chat.push({ t = t, len = chars, bot = idx, tag = tag })
 	TB.botNext[idx] <- t + 0.5
-	TB.Push({ t = t, f = function() {
+	local who = TB.Name(bot)
+	TB.Push({ t = t, tag = tag, f = function() {
 		local b = PlayerInstanceFromIndex(idx)
-		if (b != null && b.IsValid() && TB.IsBot(b)) {
+		// бота кикнули, а в его слот зашёл другой — чужие реплики не договариваем
+		if (b != null && b.IsValid() && TB.IsBot(b) && TB.Name(b) == who) {
 			local seen = TB.Print(b, text, teamOnly)
 			if (seen && snd != "") TB.PlayClip(b, snd)
 			else if (seen) TB.Tts(b, text)
@@ -275,6 +308,7 @@ TB.BotSay <- function(bot, text, teamOnly, extra = 0.0, raw = false, after = nul
 	// вторая часть / исправление опечатки — отдельным сообщением следом
 	local prev = t
 	foreach (x in more) if (x != "") { TB.BotSay(bot, x, teamOnly, 0.0, true, prev); prev = TB.botNext[idx] - 0.5 }
+	return true
 }
 
 // ------------------------------------------------------------ think
@@ -347,7 +381,7 @@ TB.Side <- function(bot, human) { return (bot.GetTeam() == human.GetTeam()) ? "t
 TB.Talked <- function(bot) { TB.lastBot = bot.entindex(); TB.lastBotTime = Time() }
 
 // как сообщение влияет на отношение ботов к тебе
-TB.MOOD <- { praise = 6, love = 5, sorry = 8, polite = 5, greet = 2, team_up = 8,
+TB.MOOD <- { praise = 6, love = 5, sorry = 8, self_blame = 3, polite = 5, greet = 2, team_up = 8,
 	kd_taunt = -3, cheater = -3, ggez = -4, threat = -2, blame_team = -4, mother = -6 }
 TB.UpdateMood <- function(a, rude, polite) {
 	local d = 0
@@ -363,10 +397,12 @@ TB.OnHumanSay <- function(human, text) {
 	local a = TBC.Analyze(text)
 	TB.prio = true
 	local rudeWord = TBC.RudeWord(a), polite = TBC.IsPolite(a.toks)
+	local name = (a.intent != null) ? a.intent.name : ""
+	// «я уебаном был», «ну я дно» — это про себя, не хамство ботам
+	if (name == "self_blame") rudeWord = null
 	local rude = rudeWord != null
 	a.rudeWord <- (rudeWord != null) ? rudeWord : ""
 	TB.UpdateMood(a, rude, polite)
-	local name = (a.intent != null) ? a.intent.name : ""
 	if (TB_CFG.debug) printl("[ToxicBots] \"" + text + "\" -> " + name + " (" + a.score + ") хамство=" + rude + " вежливо=" + polite + " уважение=" + TB.resp)
 
 	if (TB.FunSay(human, a, text, rude, polite, name)) return
@@ -385,6 +421,7 @@ TB.OnHumanSay <- function(human, text) {
 	if (TB_CFG.debug) printl("[ToxicBots]   " + TB.Name(bot) + " -> " + r[1] + " слово=" + a.word)
 	TB.BotSay(bot, r[0], false)
 	TB.Talked(bot)
+	if (rude) TB.NoteRude(human, bot, a)
 	TB.FunAfterReply(human, bot, a, rude, toxic)
 
 	// второй бот подтявкивает
@@ -431,7 +468,8 @@ TB.Radio <- function(human, c) {
 	if (TB_CFG.debug) printl("[ToxicBots] радио " + c.slot + " userid=" + uid + " -> " + ok)
 	return ok
 }
-TB.BombPlanted <- function() { return Entities.FindByClassname(null, "planted_c4") != null }
+TB.bombPlanted <- false   // по событиям bomb_planted / round_start (поиск сущности — запасной)
+TB.BombPlanted <- function() { return TB.bombPlanted || Entities.FindByClassname(null, "planted_c4") != null }
 
 TB.ObeyChance <- function(rude, polite) {
 	if (rude) return 0.08
@@ -493,7 +531,7 @@ TB.OnCommand <- function(human, a, name, rude, polite) {
 			if (o.entindex() != bot.entindex()) TB.BotSay(o, TBC.EventLine("cmd_pile", null, TB.Ctx(human, o)), true, 1.0)
 		}
 	} else {
-		TB.BotSay(bot, TBC.EventLine(rude ? "cmd_refuse_rude" : "cmd_refuse", null, ctx), true)
+		TB.BotSay(bot, TBC.EventLine(rude ? "cmd_refuse_rude" : (TB.resp < 35 ? "cmd_refuse_hate" : "cmd_refuse"), null, ctx), true)
 	}
 	TB.Talked(bot)
 }

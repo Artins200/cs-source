@@ -122,14 +122,15 @@ def starts(tok, key, off=0):
     return True
 
 
-EXACT, PREFIX, CONTAINS, SUFFIX = 0, 1, 2, 3
+EXACT, PREFIX, CONTAINS, SUFFIX, STRICT, STRICT_PREFIX = 0, 1, 2, 3, 4, 5
 
 
 def part_score(tok, mode, key):
     n, lt = len(key), len(tok)
     if mode == EXACT:
         if lt == n and starts(tok, key):
-            return 1.0
+            # «х*й» не должно совпадать с «хай»: звёздочка в коротком слове — не угадываем
+            return 0.0 if (n <= 3 and 42 in tok) else 1.0
         if n >= 5 and abs(lt - n) <= 1 and lev(tok, key, 1) <= 1:
             return 0.8
         if n >= 8 and abs(lt - n) <= 2 and lev(tok, key, 2) <= 2:
@@ -138,7 +139,7 @@ def part_score(tok, mode, key):
     if mode == PREFIX:
         if starts(tok, key):
             return 1.0
-        if n >= 4:
+        if n >= 5:   # короткие префиксы — без опечаток («стак*» не должен ловить «так»)
             for L in (n, n - 1, n + 1):
                 if 1 <= L <= lt and lev(tok[:L], key, 1) <= 1:
                     return 0.8
@@ -150,6 +151,10 @@ def part_score(tok, mode, key):
         return 0.0
     if mode == SUFFIX:
         return 1.0 if lt >= n and starts(tok, key, lt - n) else 0.0
+    if mode == STRICT:          # =слово — только точно
+        return 1.0 if lt == n and starts(tok, key) and not (n <= 3 and 42 in tok) else 0.0
+    if mode == STRICT_PREFIX:   # =слово* — начинается точно с этого
+        return 1.0 if starts(tok, key) else 0.0
     return 0.0
 
 
@@ -166,7 +171,13 @@ def parse_key(raw, default_w):
     for p in raw.split('_'):
         if not p:
             continue
-        if p.startswith('*') and p.endswith('*') and len(p) > 2:
+        strict = p.startswith('=')
+        if strict:
+            p = p[1:]
+        if strict:
+            mode = STRICT_PREFIX if p.endswith('*') else STRICT
+            p = p.rstrip('*')
+        elif p.startswith('*') and p.endswith('*') and len(p) > 2:
             mode, p = CONTAINS, p[1:-1]
         elif p.endswith('*'):
             mode, p = PREFIX, p[:-1]

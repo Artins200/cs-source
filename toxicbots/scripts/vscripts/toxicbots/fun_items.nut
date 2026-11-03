@@ -60,16 +60,30 @@ TB.Trim <- function(s) {
 	return s.slice(a, b)
 }
 TB.Pre <- function(w, p) { return w.len() >= p.len() && w.slice(0, p.len()) == p }
-// найти оружие в тексте: { w = запись TB.WPN } / { c = запись TB.WCAT } / null
-TB.ParseWeapon <- function(a) {
-	local words = TB.Words(a)
-	foreach (w in words) {
-		foreach (c in TB.WCAT) foreach (k in c.keys) if (TB.Pre(w, k)) return { c = c }
-		foreach (e in TB.WPN) {
-			if ("exact" in e) foreach (k in e.exact) if (w == k) return { w = e }
-			foreach (k in e.keys) if (TB.Pre(w, k)) return { w = e }
-		}
+// оружие в одном слове: { w = запись TB.WPN } / { c = запись TB.WCAT } / null
+TB.WeaponOf <- function(w) {
+	foreach (c in TB.WCAT) foreach (k in c.keys) if (TB.Pre(w, k)) return { c = c }
+	foreach (e in TB.WPN) {
+		if ("exact" in e) foreach (k in e.exact) if (w == k) return { w = e }
+		foreach (k in e.keys) if (TB.Pre(w, k)) return { w = e }
 	}
+	return null
+}
+// всё оружие в тексте: [{ w|c, neg }] — neg = «не на AWP», «без гранат»
+TB.ParseWeapons <- function(a) {
+	local words = TB.Words(a), out = []
+	foreach (i, w in words) {
+		local p = TB.WeaponOf(w)
+		if (p == null) continue
+		local p1 = (i > 0) ? words[i - 1] : "", p2 = (i > 1) ? words[i - 2] : ""
+		p.neg <- p1 == "не" || p1 == "без" || p1 == "кроме" || ((p1 == "на" || p1 == "с" || p1 == "со") && (p2 == "не" || p2 == "без"))
+		out.push(p)
+	}
+	return out
+}
+// первое «не отрицаемое» оружие
+TB.ParseWeapon <- function(a) {
+	foreach (p in TB.ParseWeapons(a)) if (!p.neg) return p
 	return null
 }
 
@@ -208,31 +222,115 @@ TB.duel <- null
 TB.dirty <- 0          // сколько раз ты нарушил дуэль
 TB.dirtyW <- ""        // чем («с AWP»)
 TB.dirtyDisp <- ""     // какая была дуэль («на ножах»)
+TB.dirtyT <- -100.0    // когда было последнее нарушение (можно оправдаться: «не купил», «случайно»)
+TB.dirtyBot <- -1      // кого убили не тем оружием
 TB.offer <- null       // бот предложил дуэль: { spec, bot, until }
 TB.roundStartT <- -100.0
 TB.roundNo <- 0
 TB.money <- {}         // деньги ботов на начало раунда (дуэль не должна их разорять)
 TB.giveNext <- {}
 
-TB.DuelSpec <- function(a) {
-	local p = TB.ParseWeapon(a)
-	local s = { ids = { knife = 1 }, give = null, disp = "на ножах", cats = {} }
-	if (p == null) return s
-	if ("w" in p) {
-		s.ids[p.w.id] <- 1
-		s.give = (p.w.cat == "knife") ? null : p.w.id
-		s.disp = p.w.pl
-		if (p.w.cat != "knife") s.cats[p.w.cat] <- 1
-	} else {
-		foreach (e in TB.WPN) if (e.cat == p.c.cat) s.ids[e.id] <- 1
-		s.give = p.c.give
-		s.disp = p.c.pl
-		s.cats[p.c.cat] <- 1
+// спецификация дуэли из списка оружия: «ножи и диглы» -> всё перечисленное разрешено
+TB.SpecOf <- function(list) {
+	local s = { ids = { knife = 1 }, give = null, disp = "на ножах", cats = {}, bomb = true }
+	local names = [], nades = null
+	foreach (p in list) {
+		local pl
+		if ("w" in p) {
+			if (p.w.cat == "grenade") { nades = p.w.pl; continue }
+			s.ids[p.w.id] <- 1
+			if (p.w.cat != "knife") { s.cats[p.w.cat] <- 1; if (s.give == null) s.give = p.w.id }
+			pl = p.w.pl
+		} else {
+			foreach (e in TB.WPN) if (e.cat == p.c.cat) s.ids[e.id] <- 1
+			s.cats[p.c.cat] <- 1
+			if (s.give == null) s.give = p.c.give
+			pl = p.c.pl
+		}
+		local dup = false
+		foreach (n in names) if (n == pl) dup = true
+		if (!dup) names.push(pl)
+	}
+	if (nades != null) {
+		s.ids.hegrenade <- 1; s.cats.grenade <- 1
+		if (names.len() == 0) { s.give = "hegrenade"; names.push(nades) }
+		else s.nades <- true
+	}
+	if (names.len() > 0) {
+		local d = names[0]
+		for (local i = 1; i < names.len(); i++) {
+			local sp = names[i].find(" ")   // «на диглах» -> «диглах» (строки — байты, режем по пробелу)
+			d += " и " + ((sp != null) ? names[i].slice(sp + 1) : names[i])
+		}
+		s.disp = d
 	}
 	return s
 }
+TB.DuelSpec <- function(a) {
+	local pos = []
+	foreach (p in TB.ParseWeapons(a)) if (!p.neg) pos.push(p)
+	local s = TB.SpecOf(pos)
+	local r = TB.DuelRules(TB.Words(a))
+	if (r != null && r.bomb != null) s.bomb = r.bomb
+	return s
+}
+TB.IsKnifeDuel <- function(s) { return s != null && s.give == null && s.cats.len() == 0 }
+// дуэльное событие: нормальная версия при хорошем настроении, ножевые фразы — только на ножах
+TB.DEv <- function(name, bot, ctx, spec = null, toxic = null) {
+	if (spec == null) spec = TB.duel
+	if (toxic == null) toxic = TB.IsToxic(bot)
+	if (!toxic && ((name + "_nice") in TB_DATA.events)) return TBC.EventLine(name + "_nice", null, ctx)
+	if (TB.IsKnifeDuel(spec) && ((name + "_knife") in TB_DATA.events) && TBC.Rnd() < 0.5) name += "_knife"
+	return TBC.EventLine(name, null, ctx)
+}
+// есть ли у игрока оружие для дуэли (для ножей — всегда)
+TB.HasDuelW <- function(p, d) {
+	if (d.give == null) return true
+	foreach (w in TB.Weapons(p)) { local id = TB.WId(w); if (id != "knife" && (id in d.ids)) return true }
+	return false
+}
+// правила словами: «бомбу можно ставить», «без бомбы», «гранаты можно» -> { bomb, nades } / null
+TB.DuelRules <- function(words) {
+	local r = { bomb = null, nades = null }, any = false
+	foreach (i, w in words) {
+		local bomb = TB.Pre(w, "бомб") || w == "c4" || w == "с4" || TB.Pre(w, "плент") || TB.Pre(w, "плэнт") || TB.Pre(w, "став") || TB.Pre(w, "заклад") || TB.Pre(w, "плант")
+		if (TB.Pre(w, "бомбит") || TB.Pre(w, "бомбан") || TB.Pre(w, "бомбил")) continue   // «меня бомбит» — не про бомбу
+		local nade = TB.Pre(w, "гранат") || TB.Pre(w, "хаеш") || TB.Pre(w, "хеш") || TB.Pre(w, "граник")
+		if (!bomb && !nade) continue
+		local neg = false
+		for (local j = (i > 3 ? i - 3 : 0); j < words.len() && j <= i + 2; j++) {
+			local x = words[j]
+			if (x == "без" || x == "нельзя" || TB.Pre(x, "запрещ") || (x == "не" && j + 1 < words.len() && words[j + 1] != "на")) neg = true
+		}
+		if (bomb) r.bomb = !neg
+		else r.nades = !neg
+		any = true
+	}
+	return any ? r : null
+}
+TB.RulesText <- function(r) {
+	local parts = []
+	if (r.bomb == true) parts.push("бомбу ставить можно")
+	if (r.bomb == false) parts.push("без бомбы")
+	if (r.nades == true) parts.push("гранаты можно")
+	if (r.nades == false) parts.push("без гранат")
+	local s = ""
+	foreach (i, x in parts) s += (i > 0 ? ", " : "") + x
+	return (s != "") ? s : "всё по-честному"
+}
+// применить правила к дуэли
+TB.ApplyRules <- function(d, r) {
+	if (r.bomb != null) d.bomb = r.bomb
+	if (r.nades == true) { d.ids.hegrenade <- 1; d.cats.grenade <- 1; d.nades <- true }
+	if (r.nades == false && d.give != "hegrenade") {
+		if ("hegrenade" in d.ids) delete d.ids.hegrenade
+		if ("grenade" in d.cats) delete d.cats.grenade
+		if ("nades" in d) delete d.nades
+	}
+}
 TB.DuelCtx <- function(ctx) {
 	if (TB.duel != null) ctx.duel <- TB.duel.disp
+	if (TB.duel != null && !("rules" in ctx && ctx.rules != "всё по-честному")) ctx.rules <- TB.RulesText({ bomb = TB.duel.bomb, nades = ("nades" in TB.duel) ? true : null })
 	ctx.dirtyw <- (TB.dirtyW != "") ? TB.dirtyW : "со стволом"
 	return ctx
 }
@@ -260,15 +358,41 @@ TB.DuelActivate <- function() {
 		TB.SrvCmd(cmd)
 	}
 	TB.DuelEnforce(true)
+	// у игрока нет нужного ствола (не купил / не было денег) — кладём под ноги
+	if (d.give != null) TB.Later(1.0, function() {
+		local h = TB.Human()
+		if (TB.duel == null || !TB.duel.active || h == null || !TB.Alive(h) || TB.HasDuelW(h, TB.duel)) return
+		try { TB.SpawnWeapon(TB.duel.give, h.GetOrigin() + Vector(0, 0, 16)) } catch (e) {}
+	})
+}
+// вернуть квоты оружия ботам
+TB.DuelRestoreCv <- function(d) {
+	if (d == null || !("cv" in d)) return
+	local cmd = ""
+	foreach (cv, v in d.cv) cmd += cv + " " + v + ";"
+	delete d.cv
+	TB.SrvCmd(cmd)
+	try { StringToFile(TB.DUEL_FILE, "") } catch (e) {}
 }
 TB.DuelStop <- function() {
 	local d = TB.duel
 	TB.duel = null
-	if (d == null || !("cv" in d)) return
-	local cmd = ""
-	foreach (cv, v in d.cv) cmd += cv + " " + v + ";"
-	TB.SrvCmd(cmd)
-	try { StringToFile(TB.DUEL_FILE, "") } catch (e) {}
+	TB.DuelRestoreCv(d)
+}
+// перенести на следующий раунд (не купил, нет денег, «давай в следующем»)
+TB.DuelPostpone <- function() {
+	local d = TB.duel
+	if (d == null) return
+	if (d.active) { TB.DuelRestoreCv(d); d.active = false; d.round = -1 }
+	d.arm = 0.0
+}
+// поменять оружие / правила уже договорённой дуэли
+TB.DuelReplace <- function(spec) {
+	local d = TB.duel, was = d.active
+	if (was) TB.DuelRestoreCv(d)
+	d.ids = spec.ids; d.give = spec.give; d.disp = spec.disp; d.cats = spec.cats; d.bomb = spec.bomb
+	if ("nades" in spec) d.nades <- true; else if ("nades" in d) delete d.nades
+	if (was) TB.DuelActivate()
 }
 TB.DUEL_FILE <- "toxicbots_duel.txt"
 TB.duelChecked <- false
@@ -296,7 +420,8 @@ TB.DuelEnforce <- function(now = false) {
 		local has = false
 		foreach (w in TB.Weapons(b)) {
 			local id = TB.WId(w)
-			if (id == "knife" || id == "c4") continue
+			if (id == "knife") continue
+			if (id == "c4") { if (!d.bomb) TB.KillEnt(w); continue }   // «без бомбы»
 			if (id in d.ids) { has = true; continue }
 			TB.KillEnt(w)
 		}
@@ -317,14 +442,34 @@ TB.SnapMoney <- function() {
 }
 
 // согласиться на дуэль (сейчас или со следующего раунда)
-TB.StartDuel <- function(spec, bot, human, evNow, evNext) {
-	TB.duel = { ids = spec.ids, give = spec.give, disp = spec.disp, cats = spec.cats, active = false, round = -1 }
+// сразу — только если у игрока уже есть нужный ствол (или ножи); иначе ждём, пока купит,
+// а не успел — со следующего раунда (там выдадим)
+TB.StartDuel <- function(spec, bot, human, evNow, evNext, forceNext = false) {
+	TB.duel = { ids = spec.ids, give = spec.give, disp = spec.disp, cats = spec.cats, bomb = spec.bomb,
+		active = false, round = -1, arm = 0.0, armBot = bot.entindex() }
+	if ("nades" in spec) TB.duel.nades <- true
 	local ctx = TB.DuelCtx(TB.Ctx(human, bot))
-	if (Time() - TB.roundStartT < TB_CFG.duel_start_window) {
+	local inWin = Time() - TB.roundStartT < TB_CFG.duel_start_window
+	if (!forceNext && inWin && TB.HasDuelW(human, TB.duel)) {
 		TB.DuelActivate()
-		TB.BotSay(bot, TB.Ev(evNow, bot, ctx), false)
-	} else TB.BotSay(bot, TBC.EventLine(evNext, null, ctx), false)
+		TB.BotSay(bot, TB.DEv(evNow, bot, ctx), false)
+	} else if (!forceNext && inWin && TB.Alive(human)) {
+		TB.duel.arm = TB.roundStartT + TB_CFG.duel_start_window + 10.0
+		TB.BotSay(bot, TB.DEv("duel_accept_buy", bot, ctx), false)
+	} else TB.BotSay(bot, TB.DEv(evNext, bot, ctx, null, true), false)
 	TB.Talked(bot)
+}
+// think: игрок докупил оружие для дуэли
+TB.DuelArmTick <- function(now) {
+	local d = TB.duel
+	if (d == null || d.active || d.arm <= 0.0) return
+	if (now > d.arm) { d.arm = 0.0; return }   // не успел — начнём со следующего раунда
+	local h = TB.Human()
+	if (h == null || !TB.HasDuelW(h, d)) return
+	TB.DuelActivate()
+	local b = PlayerInstanceFromIndex(d.armBot)
+	if (b == null || !b.IsValid() || !TB.IsBot(b)) { local all = TB.Bots(); if (all.len() == 0) return; b = TBC.Pick(all) }
+	TB.BotSay(b, TB.DEv("duel_bought", b, TB.DuelCtx(TB.Ctx(h, b))), false)
 }
 
 TB.OnDuel <- function(human, a, rude, polite) {
@@ -335,12 +480,15 @@ TB.OnDuel <- function(human, a, rude, polite) {
 	ctx.duel <- spec.disp
 	TB.DuelCtx(ctx)
 	ctx.duel = spec.disp
+	local r = TB.DuelRules(TB.Words(a))
+	ctx.rules = (r != null) ? TB.RulesText(r) : "всё по-честному"
 	TB.Talked(bot)
 	if (TB.duel != null) { ctx.duel = TB.duel.disp; TB.BotSay(bot, TBC.EventLine("duel_already", null, ctx), false); return }
 	if (TB.dirty > 0 && TBC.Rnd() < 0.55 + 0.15 * TB.dirty) { TB.BotSay(bot, TBC.EventLine("duel_refuse_dirty", null, ctx), false); return }
 	if ((rude && TBC.Rnd() < 0.45) || (TB.resp < 25 && TBC.Rnd() < 0.4)) { TB.BotSay(bot, TBC.EventLine("duel_refuse", null, ctx), false); return }
 	TB.offer = null
 	TB.StartDuel(spec, bot, human, "duel_accept", "duel_accept_next")
+	if (r != null) TB.BotSay(bot, TBC.EventLine("duel_rule_ok", null, TB.DuelCtx(ctx)), false)
 }
 
 // бот сам предлагает дуэль в начале раунда
@@ -355,10 +503,12 @@ TB.MaybeOffer <- function() {
 	local r = TBC.Rnd(), spec
 	local fake = { toks = [TBC.Decode(r < 0.6 ? "нож" : (r < 0.8 ? "дигл" : (r < 0.9 ? "авп" : "скаут")))] }
 	spec = TB.DuelSpec(fake)
-	TB.offer = { spec = spec, bot = b.entindex(), until = Time() + 45.0 }
 	local ctx = TB.Ctx(h, b)
 	ctx.duel <- spec.disp
-	TB.BotSay(b, TBC.EventLine("duel_offer", null, ctx), false, 2.5)
+	// предложение действует только после того, как появилось в чате (и если вообще влезло)
+	if (!TB.BotSay(b, TBC.EventLine("duel_offer", null, ctx), false, 2.5)) return
+	local shown = TB.botNext[b.entindex()] - 0.5
+	TB.offer = { spec = spec, bot = b.entindex(), from = shown, until = shown + 45.0 }
 }
 TB.YES <- {}
 TB.NO <- {}
@@ -378,3 +528,23 @@ TB.YesNo <- function(a, text) {
 	}
 	return 0
 }
+
+// ------------------------------------------------------------ бомба (для «заложил — охраняйте» и «дуэль без бомбы»)
+TB_Events.OnGameEvent_bomb_planted <- function(params) {
+	TB.bombPlanted = true
+	if (!TB_CFG.enabled || !TB.DuelOn() || TB.duel.bomb || !("userid" in params)) return
+	local p = TB.NoteUid(params.userid)
+	if (p == null || TB.IsBot(p)) return
+	// договорились «без бомбы», а игрок заложил
+	TB.dirty++
+	TB.dirtyW = "с бомбой"; TB.dirtyDisp = TB.duel.disp; TB.dirtyT = Time(); TB.dirtyBot = -1
+	TB.Respect(-10)
+	local foes = TB.Bots(p.GetTeam() == 2 ? 3 : 2)
+	if (foes.len() == 0) return
+	local b = TBC.Pick(foes)
+	TB.prio = true; TB.tag = "dirty"
+	TB.BotSay(b, TBC.EventLine("duel_dirty_bomb", null, TB.DuelCtx(TB.Ctx(p, b))), false, 0.5)
+	TB.prio = false; TB.tag = null
+}
+TB_Events.OnGameEvent_bomb_defused <- function(params) { TB.bombPlanted = false }
+TB_Events.OnGameEvent_bomb_exploded <- function(params) { TB.bombPlanted = false }

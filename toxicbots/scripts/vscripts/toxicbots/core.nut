@@ -150,11 +150,12 @@ TBC.Starts <- function(tok, key, off) {
 	return true
 }
 
-// режимы: 0 точное, 1 начинается с, 2 содержит, 3 заканчивается на
+// режимы: 0 точное, 1 начинается с, 2 содержит, 3 заканчивается на, 4 строго точное, 5 строго начинается с
 TBC.PartScore <- function(tok, mode, key) {
 	local n = key.len(), lt = tok.len()
 	if (mode == 0) {
-		if (lt == n && TBC.Starts(tok, key, 0)) return 1.0
+		// «х*й» не должно совпадать с «хай»: звёздочка в коротком слове — не угадываем
+		if (lt == n && TBC.Starts(tok, key, 0)) return (n <= 3 && tok.find(42) != null) ? 0.0 : 1.0
 		local df = lt - n
 		if (df < 0) df = -df
 		if (n >= 5 && df <= 1 && TBC.Lev(tok, key, 1) <= 1) return 0.8
@@ -163,7 +164,7 @@ TBC.PartScore <- function(tok, mode, key) {
 	}
 	if (mode == 1) {
 		if (TBC.Starts(tok, key, 0)) return 1.0
-		if (n >= 4) {
+		if (n >= 5) {   // короткие префиксы — без опечаток
 			if (n <= lt && TBC.Lev(tok, key, 1, n) <= 1) return 0.8
 			if (n - 1 <= lt && TBC.Lev(tok, key, 1, n - 1) <= 1) return 0.8
 			if (n + 1 <= lt && TBC.Lev(tok, key, 1, n + 1) <= 1) return 0.8
@@ -175,6 +176,8 @@ TBC.PartScore <- function(tok, mode, key) {
 		return 0.0
 	}
 	if (mode == 3) return (lt >= n && TBC.Starts(tok, key, lt - n)) ? 1.0 : 0.0
+	if (mode == 4) return (lt == n && TBC.Starts(tok, key, 0) && !(n <= 3 && tok.find(42) != null)) ? 1.0 : 0.0
+	if (mode == 5) return TBC.Starts(tok, key, 0) ? 1.0 : 0.0
 	return 0.0
 }
 
@@ -188,6 +191,8 @@ TBC.KeyMatch <- function(toks, key, f = null) {
 			if (lt == 0) continue
 			if (m0 == 0 && (lt > n0 + 1 || lt < n0 - 1)) continue
 			if (m0 == 1 && lt < n0 - 1) continue
+			if (m0 == 4 && lt != n0) continue
+			if (m0 == 5 && lt < n0) continue
 			local c0 = t[0], c1 = (lt > 1) ? t[1] : -1
 			if (c0 != f[0] && c0 != f[1] && c1 != f[0] && c1 != f[1]) continue
 		}
@@ -221,7 +226,7 @@ foreach (it in TB_DATA.intents) {
 	local row = []
 	foreach (key in it.keys) {
 		local p = key[2][0], m = p[0], kc = p[1], n = kc.len(), f = null
-		if ((m == 0 && n < 8) || m == 1) {
+		if ((m == 0 && n < 8) || m == 1 || m == 4 || m == 5) {
 			if (n >= 2 && kc[0] != 42 && kc[1] != 42) f = [kc[0], kc[1]]
 			else if (n == 1 && kc[0] != 42) f = [kc[0], kc[0]]
 		}
